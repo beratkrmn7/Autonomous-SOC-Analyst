@@ -1,0 +1,103 @@
+[
+  {
+    "incident_id": "INC-001",
+    "description": "Standard web traffic",
+    "raw_logs": [
+      {"timestamp": "2023-10-27T10:15:00Z", "src_ip": "192.168.1.100", "dst_ip": "10.0.0.5", "event_type": "HTTP_GET", "raw_message": "GET /index.html HTTP/1.1 200 OK"},
+      {"timestamp": "2023-10-27T10:15:05Z", "src_ip": "192.168.1.100", "dst_ip": "10.0.0.5", "event_type": "HTTP_GET", "raw_message": "GET /images/logo.png HTTP/1.1 200 OK"}
+    ]
+  },
+  {
+    "incident_id": "INC-002",
+    "description": "Brute-force SSH attempt without success",
+    "raw_logs": [
+      {"timestamp": "2023-10-27T11:05:00Z", "src_ip": "203.0.113.42", "dst_ip": "10.0.0.10", "event_type": "SSH_AUTH", "raw_message": "Failed password for root from 203.0.113.42 port 38412 ssh2"},
+      {"timestamp": "2023-10-27T11:05:02Z", "src_ip": "203.0.113.42", "dst_ip": "10.0.0.10", "event_type": "SSH_AUTH", "raw_message": "Failed password for admin from 203.0.113.42 port 38414 ssh2"},
+      {"timestamp": "2023-10-27T11:05:04Z", "src_ip": "203.0.113.42", "dst_ip": "10.0.0.10", "event_type": "SSH_AUTH", "raw_message": "Failed password for test from 203.0.113.42 port 38416 ssh2"}
+    ]
+  },
+  {
+    "incident_id": "INC-003",
+    "description": "SQL Injection attempt",
+    "raw_logs": [
+      {"timestamp": "2023-10-27T12:30:00Z", "src_ip": "198.51.100.7", "dst_ip": "10.0.0.15", "event_type": "HTTP_POST", "raw_message": "POST /login HTTP/1.1 401 Unauthorized - user=admin"},
+      {"timestamp": "2023-10-27T12:30:15Z", "src_ip": "198.51.100.7", "dst_ip": "10.0.0.15", "event_type": "HTTP_POST", "raw_message": "POST /login HTTP/1.1 401 Unauthorized - user=admin' OR '1'='1"},
+      {"timestamp": "2023-10-27T12:30:30Z", "src_ip": "198.51.100.7", "dst_ip": "10.0.0.15", "event_type": "HTTP_POST", "raw_message": "POST /login HTTP/1.1 500 Internal Server Error - user=admin'; DROP TABLE users;--"}
+    ]
+  },
+  {
+    "incident_id": "INC-004",
+    "description": "Normal admin login (False Positive)",
+    "raw_logs": [
+      {"timestamp": "2023-10-27T13:00:00Z", "src_ip": "10.0.0.50", "dst_ip": "10.0.0.5", "event_type": "HTTP_POST", "raw_message": "POST /login HTTP/1.1 200 OK - user=admin_real"},
+      {"timestamp": "2023-10-27T13:00:05Z", "src_ip": "10.0.0.50", "dst_ip": "10.0.0.5", "event_type": "HTTP_GET", "raw_message": "GET /dashboard HTTP/1.1 200 OK"}
+    ]
+  },
+  {
+    "incident_id": "INC-005",
+    "description": "Port scan activity",
+    "raw_logs": [
+      {"timestamp": "2023-10-27T14:00:00Z", "src_ip": "203.0.113.99", "dst_ip": "10.0.0.20", "event_type": "FIREWALL", "raw_message": "BLOCK TCP 203.0.113.99:43214 -> 10.0.0.20:22 (SYN)"},
+      {"timestamp": "2023-10-27T14:00:00Z", "src_ip": "203.0.113.99", "dst_ip": "10.0.0.20", "event_type": "FIREWALL", "raw_message": "BLOCK TCP 203.0.113.99:43214 -> 10.0.0.20:80 (SYN)"},
+      {"timestamp": "2023-10-27T14:00:01Z", "src_ip": "203.0.113.99", "dst_ip": "10.0.0.20", "event_type": "FIREWALL", "raw_message": "BLOCK TCP 203.0.113.99:43214 -> 10.0.0.20:443 (SYN)"},
+      {"timestamp": "2023-10-27T14:00:01Z", "src_ip": "203.0.113.99", "dst_ip": "10.0.0.20", "event_type": "FIREWALL", "raw_message": "BLOCK TCP 203.0.113.99:43214 -> 10.0.0.20:3306 (SYN)"}
+    ]
+  },
+  {
+    "incident_id": "INC-006",
+    "description": "SSH brute force followed by successful root login",
+    "raw_logs": [
+      {"timestamp": "2023-10-27T15:00:00Z", "src_ip": "198.51.100.88", "dst_ip": "10.0.0.10", "event_type": "SSH_AUTH", "raw_message": "Failed password for root from 198.51.100.88 port 50111 ssh2"},
+      {"timestamp": "2023-10-27T15:00:02Z", "src_ip": "198.51.100.88", "dst_ip": "10.0.0.10", "event_type": "SSH_AUTH", "raw_message": "Failed password for root from 198.51.100.88 port 50113 ssh2"},
+      {"timestamp": "2023-10-27T15:00:10Z", "src_ip": "198.51.100.88", "dst_ip": "10.0.0.10", "event_type": "SSH_AUTH", "raw_message": "Accepted password for root from 198.51.100.88 port 50125 ssh2"},
+      {"timestamp": "2023-10-27T15:00:11Z", "src_ip": "198.51.100.88", "dst_ip": "10.0.0.10", "event_type": "BASH_CMD", "raw_message": "USER=root CMD=whoami"}
+    ]
+  },
+  {
+    "incident_id": "INC-007",
+    "description": "XSS payload attempt",
+    "raw_logs": [
+      {"timestamp": "2023-10-27T16:10:00Z", "src_ip": "203.0.113.111", "dst_ip": "10.0.0.5", "event_type": "HTTP_GET", "raw_message": "GET /search?q=<script>alert(1)</script> HTTP/1.1 200 OK"},
+      {"timestamp": "2023-10-27T16:10:05Z", "src_ip": "203.0.113.111", "dst_ip": "10.0.0.5", "event_type": "HTTP_GET", "raw_message": "GET /search?q=<img src=x onerror=alert(document.cookie)> HTTP/1.1 200 OK"}
+    ]
+  },
+  {
+    "incident_id": "INC-008",
+    "description": "Suspicious PowerShell command (Base64)",
+    "raw_logs": [
+      {"timestamp": "2023-10-27T17:20:00Z", "src_ip": "10.0.0.101", "dst_ip": "10.0.0.101", "event_type": "PROCESS_CREATE", "raw_message": "Process created: powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand JABzAD0ATgBlAHcALQBPAGIAagBlAGMAdAAgAEkATwAuAE0AZQBtAG8AcgB5AFMAdAByAGUAYQBtACgAWwBDAG8AbgB2AGUAcgB0AF0AOgA6AEYAcgBvAG0AQgBhAHMAZQA2ADQAUwB0AHIAaQBuAGcAKAAiAEgA..."}
+    ]
+  },
+  {
+    "incident_id": "INC-009",
+    "description": "Malware hash alert from EDR",
+    "raw_logs": [
+      {"timestamp": "2023-10-27T18:30:00Z", "src_ip": "10.0.0.105", "dst_ip": "10.0.0.105", "event_type": "EDR_ALERT", "raw_message": "File downloaded: invoice_final.exe. SHA256: 8d1f7c3c5a6d91f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6. Malware family: Emotet."}
+    ]
+  },
+  {
+    "incident_id": "INC-010",
+    "description": "DNS Tunneling attempt",
+    "raw_logs": [
+      {"timestamp": "2023-10-27T19:40:00Z", "src_ip": "10.0.0.110", "dst_ip": "10.0.0.53", "event_type": "DNS_QUERY", "raw_message": "Query: a1b2c3d4e5.malicious-domain.com IN A"},
+      {"timestamp": "2023-10-27T19:40:01Z", "src_ip": "10.0.0.110", "dst_ip": "10.0.0.53", "event_type": "DNS_QUERY", "raw_message": "Query: f6g7h8i9j0.malicious-domain.com IN A"},
+      {"timestamp": "2023-10-27T19:40:02Z", "src_ip": "10.0.0.110", "dst_ip": "10.0.0.53", "event_type": "DNS_QUERY", "raw_message": "Query: k1l2m3n4o5.malicious-domain.com IN A"}
+    ]
+  },
+  {
+    "incident_id": "INC-011",
+    "description": "Lateral Movement (SMB PsExec)",
+    "raw_logs": [
+      {"timestamp": "2023-10-27T20:50:00Z", "src_ip": "10.0.0.25", "dst_ip": "10.0.0.30", "event_type": "SMB_ACCESS", "raw_message": "Successful SMB connection to IPC$ share with user admin"},
+      {"timestamp": "2023-10-27T20:50:05Z", "src_ip": "10.0.0.25", "dst_ip": "10.0.0.30", "event_type": "SERVICE_CREATE", "raw_message": "Service created: PSEXESVC.exe on target 10.0.0.30"}
+    ]
+  },
+  {
+    "incident_id": "INC-012",
+    "description": "Internal Backup Traffic (False Positive)",
+    "raw_logs": [
+      {"timestamp": "2023-10-27T23:00:00Z", "src_ip": "10.0.0.200", "dst_ip": "10.0.0.201", "event_type": "NETWORK_FLOW", "raw_message": "Large data transfer. 50GB transferred over port 443."},
+      {"timestamp": "2023-10-27T23:00:00Z", "src_ip": "10.0.0.200", "dst_ip": "10.0.0.201", "event_type": "PROCESS_INFO", "raw_message": "Source process: backup_agent.exe"}
+    ]
+  }
+]
