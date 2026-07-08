@@ -77,11 +77,11 @@
   },
   {
     "incident_id": "INC-010",
-    "description": "DNS Tunneling attempt",
+    "description": "DNS Tunneling detection via long subdomains",
     "raw_logs": [
-      {"timestamp": "2023-10-27T19:40:00Z", "src_ip": "10.0.0.110", "dst_ip": "10.0.0.53", "event_type": "DNS_QUERY", "raw_message": "Query: a1b2c3d4e5.malicious-domain.com IN A"},
-      {"timestamp": "2023-10-27T19:40:01Z", "src_ip": "10.0.0.110", "dst_ip": "10.0.0.53", "event_type": "DNS_QUERY", "raw_message": "Query: f6g7h8i9j0.malicious-domain.com IN A"},
-      {"timestamp": "2023-10-27T19:40:02Z", "src_ip": "10.0.0.110", "dst_ip": "10.0.0.53", "event_type": "DNS_QUERY", "raw_message": "Query: k1l2m3n4o5.malicious-domain.com IN A"}
+      {"timestamp": "2023-10-27T19:00:01Z", "src_ip": "10.0.0.122", "dst_ip": "8.8.8.8", "event_type": "DNS_QUERY", "raw_message": "Query: a1b2c3d4e5f6g7h8i9j0k1l2m3.malicious-domain.com"},
+      {"timestamp": "2023-10-27T19:00:05Z", "src_ip": "10.0.0.122", "dst_ip": "8.8.8.8", "event_type": "DNS_QUERY", "raw_message": "Query: n4o5p6q7r8s9t0u1v2w3x4y5z6.malicious-domain.com"},
+      {"timestamp": "2023-10-27T19:00:10Z", "src_ip": "10.0.0.122", "dst_ip": "8.8.8.8", "event_type": "DNS_QUERY", "raw_message": "Query: aabbccddeeffgghhiijjkkllmm.malicious-domain.com"}
     ]
   },
   {

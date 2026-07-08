@@ -1,14 +1,14 @@
 # Agentic SOC Triage Assistant 
 
-An **Autonomous Security Operations Center (SOC) Triage System** powered by LangGraph, LLMs, and Python. This project is designed to automate the initial investigation and triage of security alerts and raw logs, significantly reducing the workload on human SOC analysts while eliminating false positives.
+An **Autonomous Security Operations Center (SOC) Triage System** powered by LangGraph, LLMs, and Python. This project is designed to automate the initial investigation and triage of security alerts and raw logs, reducing the false positive workload on human SOC analysts.
 
 ##  Key Features
 
 *   **Multi-Agent State Machine (LangGraph):** The system relies on a strictly defined directed graph rather than an unconstrained LLM. It manages iterative reasoning (ReAct) efficiently.
 *   **Deterministic Entity Extraction:** Pre-processes logs with Regex to extract IPs, domains, hashes, and endpoints *before* sending data to the LLM, saving tokens and improving accuracy.
-*   **Dynamic Strategy Routing:** Analyzes incoming event types (e.g., `SSH_AUTH`, `DNS_QUERY`) and generates a strict, step-by-step investigation strategy injected directly into the LLM's system prompt.
-*   **Robust Evidence Validation:** Validates all LLM-provided evidence against the original raw logs to completely prevent hallucinated quotes or mismatched event IDs.
-*   **Action Recommendations:** Maps specific incident types (e.g., `sql_injection`, `dns_tunneling`, `benign_web_traffic`) to actionable, context-aware mitigation strategies.
+*   **Automated Deterministic Pre-Analysis:** Analyzes incoming event types and deterministically runs Python detection tools to generate highly accurate "candidate evidence" before the LLM is even invoked.
+*   **Robust Evidence Validation:** Validates all LLM-provided evidence against the original raw logs to reduce hallucinated evidence through strict `event_id` and substring quote validation.
+*   **Action Recommendations & MITRE ATT&CK:** Maps specific incident types (e.g., `sql_injection`, `dns_tunneling`, `benign_web_traffic`) to actionable mitigation strategies and MITRE techniques.
 *   **Infinite Loop Protection:** Enforces a strict iteration limit to prevent the agent from getting stuck in an endless tool-calling loop.
 *   **FastAPI Integration:** Fully accessible via a REST API (`/analyze`, `/incident/{id}/report`).
 
@@ -19,6 +19,7 @@ An **Autonomous Security Operations Center (SOC) Triage System** powered by Lang
 *   **Groq API (Llama 3.3 70B):** High-speed, cost-effective LLM inference.
 *   **FastAPI & Uvicorn:** For API endpoints and server deployment.
 *   **Pydantic:** Strict schema validation for agent outputs.
+*   **Pytest:** For deterministic logic testing.
 
 ##  Getting Started
 
@@ -53,12 +54,18 @@ You can access the Swagger UI documentation at: `http://localhost:8000/docs`
 
 ##  Project Structure
 
-*   `main.py`: The entry point for the terminal-based testing and the LangGraph workflow definition.
+*   `graph.py`: LangGraph workflow definition.
+*   `main.py`: Terminal-based test runner using `mock_logs.json`.
 *   `server.py`: FastAPI server for exposing the system via REST endpoints.
-*   `nodes.py`: Contains all the individual workflow nodes (Entity Extraction, Router, Triage Agent, Validation, Reporter).
-*   `tools.py`: Deterministic Python tools for the LLM to search logs and detect specific threat patterns (SQLi, Brute Force, Port Scan, etc.).
-*   `models.py`: Pydantic schemas and typed dictionaries for state management.
-*   `mock_logs.json`: A dataset containing 12 distinct security scenarios (both real threats and false positives).
+*   `nodes.py`: Workflow nodes such as entity extraction, automated detection, triage, validation, action recommendation and reporter.
+*   `tools.py`: LLM-accessible tools and deterministic detection functions.
+*   `models.py`: Pydantic models and LangGraph state schemas.
+*   `mock_logs.json`: Mock SOC incident dataset.
+*   `tests/`: Test suite for detection logic and graph execution.
+
+##  System Definition
+
+This project is not a full production SOC platform. It is a **LangGraph-based, deterministic detection-layered, and constrained LLM triage agent PoC** demonstrating evidence-based autonomous investigation.
 
 ##  License
 MIT License

@@ -47,6 +47,9 @@ class IncidentState(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
     iteration_count: int
     strategy: str
+    mitre_techniques: List[str]
+    candidate_evidence: List[dict]
+    detected_signals: List[dict]
     
     # State fields added in Phase 3 - Stage 1
     search_history: Annotated[List[dict], append_list]

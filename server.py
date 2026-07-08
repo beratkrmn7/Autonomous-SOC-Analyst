@@ -4,9 +4,8 @@ from typing import List, Dict, Any, Optional
 import json
 import uvicorn
 
-# Import the pre-compiled graph from main.py
-# Note: we should structure this better in a real project, but for PoC this is fine.
-from main import app as agent_app
+# Import the pre-compiled graph from graph.py
+from graph import app as agent_app
 
 app = FastAPI(
     title="Agentic SOC Triage Assistant",
@@ -27,6 +26,7 @@ class AnalyzeResponse(BaseModel):
     incident_type: Optional[str]
     severity: Optional[str]
     confidence_score: Optional[float]
+    mitre_techniques: Optional[List[str]]
     report_status: str
 
 @app.post("/analyze", response_model=AnalyzeResponse)
@@ -45,11 +45,15 @@ def analyze_incident(req: AnalyzeRequest):
         "incident_id": req.incident_id,
         "raw_logs": processed_logs, 
         "messages": [],
+        "iteration_count": 0,
+        "strategy": "",
+        "mitre_techniques": [],
+        "candidate_evidence": [],
+        "detected_signals": [],
         "search_history": [],
         "tool_results": [],
         "errors": []
     }
-    
     try:
         # Synchronous execution
         final_state = agent_app.invoke(initial_state)
@@ -63,6 +67,7 @@ def analyze_incident(req: AnalyzeRequest):
             incident_type=final_state.get('incident_type'),
             severity=final_state.get('severity'),
             confidence_score=final_state.get('confidence_score'),
+            mitre_techniques=final_state.get('mitre_techniques', []),
             report_status="Generated" if final_state.get('final_report') else "Not Generated"
         )
         
@@ -86,6 +91,7 @@ def get_incident_report(incident_id: str):
         "entities": state.get("entities", {}),
         "validated_evidence": state.get("validated_evidence", []),
         "recommended_actions": state.get("recommended_actions", []),
+        "mitre_techniques": state.get("mitre_techniques", []),
         "final_report_markdown": state.get("final_report", "No report available.")
     }
 
