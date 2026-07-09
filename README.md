@@ -1,75 +1,251 @@
-# Agentic SOC Triage Assistant 
+# Agentic SOC Triage Assistant
 
-An **Autonomous Security Operations Center (SOC) Triage System** powered by LangGraph, LLMs, and Python. This project is designed to automate the initial investigation and triage of security alerts and raw logs, reducing the false positive workload on human SOC analysts.
+A LangGraph-based Agentic SOC Triage Assistant PoC that combines deterministic detection rules, constrained LLM-based triage, evidence validation, and concise SOC reporting.
 
-##  Key Features
+Bu proje, güvenlik loglarını analiz ederek SOC analistleri için kanıta dayalı triage kararı ve kısa olay raporu üreten agentic bir SOC triage PoC sistemidir.
 
-*   **Multi-Agent State Machine (LangGraph):** The system relies on a strictly defined directed graph rather than an unconstrained LLM. It manages iterative reasoning (ReAct) efficiently.
-*   **Deterministic Entity Extraction:** Pre-processes logs with Regex to extract IPs, domains, hashes, and endpoints *before* sending data to the LLM, saving tokens and improving accuracy.
-*   **Automated Deterministic Pre-Analysis:** Analyzes incoming event types and deterministically runs Python detection tools to generate highly accurate "candidate evidence" before the LLM is even invoked.
-*   **Robust Evidence Validation:** Validates all LLM-provided evidence against the original raw logs to reduce hallucinated evidence through strict `event_id` and substring quote validation.
-*   **Deterministic Reporting:** Generates strictly deterministic reports for evidence, recommended actions, and MITRE mapping to prevent LLM hallucination in critical sections. The report generation layer is intentionally concise and evidence-first. It produces short SOC triage summaries focused on four questions: what happened, why it matters, what evidence supports the verdict, and what the analyst should do next.
-*   **Action Recommendations & MITRE ATT&CK:** Maps specific incident types (e.g., `sql_injection`, `dns_tunneling`, `benign_web_traffic`) to actionable mitigation strategies and MITRE techniques.
-*   **Infinite Loop Protection:** Enforces a strict iteration limit to prevent the agent from getting stuck in an endless tool-calling loop.
-*   **FastAPI Integration:** Fully accessible via a REST API (`/analyze`, `/incident/{id}/report`).
+## System Overview
 
-##  Tech Stack
+This project is not a simple LLM chatbot. Raw logs are first normalized and analyzed by deterministic Python detection rules. These rules generate detected signals and candidate evidence before the LLM is invoked. The Triage Agent then reviews these signals, optionally calls the `search_logs` tool for additional context, and submits a structured triage decision. Every evidence item is validated against the original raw logs before the final report is generated.
 
-*   **Python 3.10+**
-*   **LangGraph & LangChain:** For agent orchestration and tool binding.
-*   **Groq API (Llama 3.3 70B):** High-speed, cost-effective LLM inference.
-*   **FastAPI & Uvicorn:** For API endpoints and server deployment.
-*   **Pydantic:** Strict schema validation for agent outputs.
-*   **Pytest:** For deterministic logic testing.
+The final output is a concise SOC triage report focused on four questions:
 
-## 📂 Project Structure
+1. What happened?
+2. Why is it suspicious or benign?
+3. What evidence supports the verdict?
+4. What should the analyst do next?
+
+## Architecture
+
+The workflow is implemented as a controlled LangGraph state machine. Deterministic nodes handle extraction, detection, validation, MITRE mapping, and action recommendation. The LLM is constrained to the triage and reporting stages, reducing hallucination risk and keeping decisions evidence-based.
+
+![Architecture](mermaid-diagram-2026-07-09-103321.png)
+
+The key idea is that the LLM does not directly decide from raw logs alone. It receives deterministic signals and candidate evidence, and its output is validated before reporting.
+
+## Key Features
+
+- **LangGraph-based agentic workflow:** The system is built as a controlled state machine instead of a free-form chatbot.
+- **Deterministic pre-analysis:** Python detection rules identify suspicious or benign patterns before the LLM is invoked.
+- **Candidate evidence generation:** Detection rules generate structured evidence with `event_id`, `quote`, `reason`, and `source`.
+- **Constrained Triage Agent:** The LLM can only use limited tools such as `search_logs` and `submit_triage_result`.
+- **Evidence validation:** Every submitted evidence item is checked against the original raw logs.
+- **needs_review fallback:** Invalid, missing, or weak evidence prevents unsafe automatic decisions.
+- **MITRE ATT&CK mapping:** Relevant incident types are mapped to ATT&CK techniques.
+- **Concise SOC reporting:** Reports are short, evidence-based, and focused on analyst decision-making.
+- **FastAPI support:** The workflow can be used through REST endpoints.
+- **Pytest coverage:** Deterministic detection and validation logic are covered by tests.
+
+## Why This Is Not Just an LLM Chatbot
+
+A simple chatbot would send raw logs directly to an LLM and return a free-form answer. This project uses a controlled agentic workflow:
+
+1. Logs are normalized with event IDs.
+2. Deterministic detection rules generate signals and candidate evidence.
+3. The Triage Agent reviews structured evidence and may call tools for more context.
+4. The triage result must follow a strict Pydantic schema.
+5. Evidence is validated against the original raw logs.
+6. The final report is generated only from validated evidence and deterministic recommendations.
+
+This makes the system a controlled Agentic SOC Triage PoC rather than a plain LLM chatbot.
+
+## Report Generation
+
+The report generation layer is intentionally concise and evidence-first. The goal is not to produce long generic security writeups, but to create a short SOC triage report that can be understood quickly.
+
+Each report answers four questions:
+
+1. **Verdict:** Is the incident a false positive, suspicious activity, confirmed incident, or does it need human review?
+2. **Why it matters:** Why is the log suspicious, malicious, benign, or inconclusive?
+3. **Key evidence:** Which validated event IDs and log quotes support the decision?
+4. **Recommended actions:** What should the analyst do next?
+
+The report is designed to be short and readable. It avoids unsupported claims such as data exfiltration, account compromise, or database compromise unless the logs provide direct evidence.
+
+### Example Report Format
+
+```text
+## Triage Summary
+- Verdict: suspicious
+- Incident Type: bruteforce_failed
+- Severity: medium
+- Confidence: 0.86
+
+## Why It Matters
+Multiple failed SSH login attempts were observed from the same source IP within a short time window. No successful login was found, so the activity is classified as suspicious rather than confirmed compromise.
+
+## Key Evidence
+- INC-002-E001: Failed password for root from 203.0.113.42 port 38412 ssh2
+- INC-002-E002: Failed password for admin from 203.0.113.42 port 38414 ssh2
+- INC-002-E003: Failed password for test from 203.0.113.42 port 38416 ssh2
+
+## Recommended Actions
+- Review additional authentication logs for the same source IP.
+- Check whether other hosts were targeted.
+- Consider temporary IP blocking if attempts continue.
+```
+
+## Tech Stack
+
+- Python 3.10+
+- LangGraph
+- LangChain / LangChain Groq
+- Groq API with Llama 3.3 70B
+- Pydantic
+- FastAPI
+- Uvicorn
+- Pytest
+- Rich for terminal output
+
+## Project Structure
 
 ```text
 SOC-Project/
-├── main.py                # Main CLI entry point (Run here for terminal output)
-├── server.py              # FastAPI server entry point (Run here for Web UI)
-├── requirements.txt
-├── README.md
+├── agent/
+│   ├── graph.py          # LangGraph workflow definition
+│   ├── nodes.py          # Workflow nodes: extraction, detection, triage, validation, reporting
+│   ├── tools.py          # LLM-accessible tools and deterministic detection functions
+│   └── models.py         # Pydantic schemas and LangGraph state definitions
 ├── data/
-│   └── mock_logs.json     # 12 diverse incident scenarios (SQLi, Brute Force, False Positives etc.)
-├── agent/                 # Core Autonomous Logic
-│   ├── graph.py           # LangGraph workflow definition
-│   ├── nodes.py           # Logic for pre-analysis, triage, validation, and reporting
-│   ├── tools.py           # Deterministic Python detection functions
-│   └── models.py          # Pydantic schemas (IncidentState, TriageResult)
-└── tests/
-    └── test_*.py          # Pytest suite for deterministic logic and reporter validation
+│   └── mock_logs.json    # Mock SOC incident dataset
+├── tests/
+│   ├── test_detection_tools.py
+│   ├── test_evidence_validation.py
+│   ├── test_reporter_output.py
+│   └── test_graph_smoke.py
+├── main.py               # Terminal-based test runner
+├── server.py             # FastAPI server
+├── requirements.txt
+└── README.md
 ```
 
-## 🚀 How to Run
+## Getting Started
 
-### 1. Terminal CLI (Rich UI)
-We use the `rich` library to provide a beautiful, markdown-rendered terminal experience.
+### 1. Install dependencies
+
 ```bash
-# Run a single incident test (INC-001)
-python main.py
-
-# Run all 12 incidents sequentially
-# Linux/macOS:
-RUN_ALL=true python main.py
-# Windows PowerShell:
-$env:RUN_ALL="true"; python main.py
+pip install -r requirements.txt
 ```
 
-### 2. FastAPI Web UI (Swagger)
-For a visual interface, you can start the built-in REST API server.
+### 2. Configure environment variables
+
+Create a `.env` file:
+
+```env
+GROQ_API_KEY=your_groq_api_key_here
+```
+
+Do not commit `.env` to GitHub.
+
+### 3. Run terminal demo
+
+```bash
+python main.py
+```
+
+Run all mock incidents:
+
+```bash
+RUN_ALL=true python main.py
+```
+
+### 4. Run API server
+
 ```bash
 python server.py
 ```
-*   `nodes.py`: Workflow nodes such as entity extraction, automated detection, triage, validation, action recommendation and reporter.
-*   `tools.py`: LLM-accessible tools and deterministic detection functions.
-*   `models.py`: Pydantic models and LangGraph state schemas.
-*   `mock_logs.json`: Mock SOC incident dataset.
-*   `tests/`: Test suite for detection logic and graph execution.
 
-##  System Definition
+Open Swagger UI:
 
-This project is not a full production SOC platform. It is a **LangGraph-based, deterministic detection-layered, and constrained LLM triage agent PoC** demonstrating evidence-based autonomous investigation. It is designed to speed up the triage process and significantly reduce the false positive workload on human analysts by providing highly validated contexts, rather than entirely replacing them.
+```text
+http://localhost:8000/docs
+```
 
-##  License
-MIT License
+### 5. Run tests
+
+```bash
+pytest
+```
+
+## API Endpoints
+
+### Health check
+
+```http
+GET /health
+```
+
+### Analyze incident
+
+```http
+POST /analyze
+```
+
+Example request:
+
+```json
+{
+  "incident_id": "INC-001",
+  "raw_logs": [
+    {
+      "timestamp": "2023-10-27T10:15:00Z",
+      "src_ip": "192.168.1.100",
+      "dst_ip": "10.0.0.5",
+      "event_type": "HTTP_GET",
+      "raw_message": "GET /index.html HTTP/1.1 200 OK"
+    }
+  ]
+}
+```
+
+### Get report
+
+```http
+GET /incident/{incident_id}/report
+```
+
+## Mock Dataset
+
+The project includes mock SOC incidents covering both suspicious activity and false positives:
+
+- Standard benign web traffic
+- Failed SSH brute force attempt
+- SQL injection attempt
+- Normal admin login false positive
+- Port scan activity
+- Brute force followed by successful login
+- XSS payload attempt
+- Suspicious PowerShell command
+- Malware hash alert
+- DNS tunneling pattern
+- Lateral movement via SMB/PsExec
+- Internal backup traffic false positive
+
+## Limitations
+
+This project is a PoC and is not intended to replace a production SIEM, SOAR, or SOC platform.
+
+Current limitations:
+
+- Uses mock log data instead of a real SIEM backend.
+- Detection rules are simplified for demonstration.
+- Threat intelligence integrations are not included yet.
+- The LLM is used for triage synthesis, so output is constrained and validated.
+- In-memory API storage is used instead of a persistent database.
+
+## Future Work
+
+Possible improvements:
+
+- Elasticsearch or OpenSearch integration
+- VirusTotal / AbuseIPDB threat intelligence lookup
+- Persistent incident database
+- Web dashboard for analysts
+- More MITRE ATT&CK mappings
+- Human-in-the-loop approval workflow
+- Docker deployment
+- More realistic log normalization pipeline
+
+## Security Note
+
+Never commit `.env` files or API keys. Use `.env.example` for documentation and keep real credentials local.
