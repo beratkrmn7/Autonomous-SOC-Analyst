@@ -2,6 +2,7 @@ import logging
 import time
 import uuid
 import traceback
+import hashlib
 from typing import Union, Iterable, Dict, Any, List
 from pathlib import Path
 
@@ -15,7 +16,7 @@ from agent.ingestion.models import (
 from agent.ingestion.limits import IngestionLimits, IngestionError, RecordLimitExceededError
 from agent.ingestion.readers import (
     detect_input_format, iter_jsonl_records, iter_json_array_records, 
-    iter_text_records, iter_input_records
+    iter_text_records, iter_input_records, iter_json_object_records
 )
 from agent.ingestion.validation import validate_and_normalize
 from agent.parsers.base import ParseContext
@@ -30,13 +31,12 @@ class IngestionPipeline:
         
     def _generate_event_id(self, envelope: RecordEnvelope) -> str:
         """Deterministically generate an event_id using source_name and raw_record_hash."""
-        # We take short segments to keep event IDs manageable
+        
         # EVT-{source_hash[:8]}-{record_hash[:8]}
-        # E.g., EVT-a3b4c5d6-1f2e3d4c
-        # To avoid collisions in identical lines in the same file, we append line_number
-        src_hash = str(hash(envelope.source_name))[:8].replace("-", "0")
+        source_hash = hashlib.sha256(envelope.source_name.encode("utf-8")).hexdigest()
+        src_hash = source_hash[:8]
         rec_hash = envelope.raw_record_hash[:8]
-        line = str(envelope.line_number or 0)
+        line = f"L{envelope.line_number}" if envelope.line_number else "U"
         return f"EVT-{src_hash}-{rec_hash}-{line}"
 
     def ingest_file(self, path: Union[str, Path]) -> IngestionResult:
@@ -65,11 +65,13 @@ class IngestionPipeline:
             return result
             
         try:
-            if input_format == InputFormat.JSONL or input_format == InputFormat.JSON_OBJECT:
+            if input_format == InputFormat.JSONL:
                 record_iter = iter_jsonl_records(path_obj, self.limits)
+            elif input_format == InputFormat.JSON_OBJECT:
+                record_iter = iter_json_object_records(path_obj, self.limits)
             elif input_format == InputFormat.JSON_ARRAY:
                 record_iter = iter_json_array_records(path_obj, self.limits)
-            elif input_format in [InputFormat.SYSLOG, InputFormat.CEF]:
+            elif input_format in [InputFormat.SYSLOG, InputFormat.CEF, InputFormat.TEXT_LOG]:
                 record_iter = iter_text_records(path_obj, self.limits)
             else:
                 record_iter = iter_text_records(path_obj, self.limits)
@@ -108,6 +110,10 @@ class IngestionPipeline:
     def _process_records(self, record_iter: Iterable[RecordEnvelope], result: IngestionResult):
         for envelope in record_iter:
             result.metrics.total_records += 1
+            
+            if envelope.framing_error:
+                self._record_failure(result, envelope, ParseStatus.FAILED, envelope.framing_error, "Failed to frame record correctly (e.g. malformed JSON)")
+                continue
             
             context = ParseContext(
                 source_name=envelope.source_name,

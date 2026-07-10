@@ -1,11 +1,16 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 import json
 import uvicorn
 import shutil
 import os
+import tempfile
 
+from agent.config import get_settings
+from agent.errors import InputTooLargeError, UnsupportedInputFormatError, InvalidEncodingError
 from agent.graph import app as agent_app
 from agent.ingestion.pipeline import IngestionPipeline
 from agent.filtering import EventFilter
@@ -17,7 +22,56 @@ app = FastAPI(
     version="1.0.0"
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 incident_store: Dict[str, dict] = {}
+
+@app.exception_handler(InputTooLargeError)
+async def input_too_large_handler(request: Request, exc: InputTooLargeError):
+    return JSONResponse(
+        status_code=413,
+        content={"code": "input_too_large", "message": str(exc)}
+    )
+
+@app.exception_handler(UnsupportedInputFormatError)
+async def unsupported_format_handler(request: Request, exc: UnsupportedInputFormatError):
+    return JSONResponse(
+        status_code=415,
+        content={"code": "unsupported_input_format", "message": str(exc)}
+    )
+
+@app.exception_handler(InvalidEncodingError)
+async def invalid_encoding_handler(request: Request, exc: InvalidEncodingError):
+    return JSONResponse(
+        status_code=422,
+        content={"code": "invalid_encoding", "message": str(exc)}
+    )
+
+async def secure_save_upload(file: UploadFile) -> str:
+    """Safely saves an uploaded file to a temporary location using chunking and byte limits."""
+    settings = get_settings()
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="wb", delete=False) as temp_file:
+            temp_path = temp_file.name
+            total_bytes = 0
+            while chunk := await file.read(8192):
+                total_bytes += len(chunk)
+                if total_bytes > settings.ingestion.MAX_UPLOAD_BYTES:
+                    temp_file.close()
+                    os.remove(temp_path)
+                    raise InputTooLargeError(f"Upload exceeds maximum limit of {settings.ingestion.MAX_UPLOAD_BYTES} bytes.")
+                temp_file.write(chunk)
+        return temp_path
+    except Exception:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
+        raise
 
 class AnalyzeRequest(BaseModel):
     incident_id: str
@@ -90,9 +144,7 @@ async def ingest_file(file: UploadFile = File(...)):
     """
     Ingest a raw log file and return a metric summary. Does not run triage.
     """
-    temp_path = f"temp_ingest_{file.filename}"
-    with open(temp_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    temp_path = await secure_save_upload(file)
         
     try:
         ingest = IngestionPipeline()
@@ -105,7 +157,7 @@ async def ingest_file(file: UploadFile = File(...)):
             "warnings": result.warnings
         }
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Ingestion failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
@@ -115,12 +167,10 @@ async def analyze_file(file: UploadFile = File(...)):
     """
     Analyze a raw JSONL log file, performing full ingestion, filtering, and correlation.
     """
-    temp_path = f"temp_{file.filename}"
-    with open(temp_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    temp_path = await secure_save_upload(file)
         
     try:
-        ingest = IngestPipeline()
+        ingest = IngestionPipeline()
         filter_engine = EventFilter()
         correlator = CorrelationEngine()
         
@@ -181,6 +231,14 @@ async def analyze_file(file: UploadFile = File(...)):
             "incidents_created": len(bundles),
             "incidents": incident_summaries
         }
+    except InputTooLargeError:
+        raise
+    except UnsupportedInputFormatError:
+        raise
+    except InvalidEncodingError:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
