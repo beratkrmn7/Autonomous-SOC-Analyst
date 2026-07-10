@@ -1,0 +1,4 @@
+{"event_id": "EV-001", "deviceAction": "block", "proto": "TCP", "src": "203.0.113.5", "sourcePort": 50123, "dst": "192.168.1.10", "destinationPort": 3389, "tcpFlags": "S", "start": "2026-07-10T10:00:00Z", "deviceInboundInterface": "wan"}
+{"event_id": "EV-002", "deviceAction": "block", "proto": "TCP", "src": "203.0.113.5", "sourcePort": 50124, "dst": "192.168.1.11", "destinationPort": 3389, "tcpFlags": "S", "start": "2026-07-10T10:00:01Z", "deviceInboundInterface": "wan"}
+{"event_id": "EV-003", "deviceAction": "block", "proto": "TCP", "src": "203.0.113.5", "sourcePort": 50125, "dst": "192.168.1.12", "destinationPort": 3389, "tcpFlags": "S", "start": "2026-07-10T10:00:02Z", "deviceInboundInterface": "wan"}
+{"event_id": "EV-004", "deviceAction": "pass", "proto": "UDP", "src": "192.168.1.50", "sourcePort": 53001, "dst": "8.8.8.8", "destinationPort": 53, "start": "2026-07-10T10:01:00Z", "deviceInboundInterface": "lan", "destinationFqdns": ["example.org"]}

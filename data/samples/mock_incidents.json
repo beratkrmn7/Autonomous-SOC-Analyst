@@ -1,0 +1,15 @@
+[
+  {
+    "incident_id": "INC-MOCK-001",
+    "timestamp": "2026-07-10T10:00:00Z",
+    "src_ip": "203.0.113.10",
+    "dst_ip": "198.51.100.20",
+    "src_port": 12345,
+    "dst_port": 80,
+    "protocol": "TCP",
+    "action": "block",
+    "event_type": "FIREWALL",
+    "raw_message": "BLOCK TCP 203.0.113.10:12345 -> 198.51.100.20:80 (S)",
+    "parser_name": "mock"
+  }
+]
