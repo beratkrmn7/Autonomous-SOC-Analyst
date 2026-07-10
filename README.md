@@ -48,6 +48,20 @@ The final output is a concise SOC triage report focused on four questions:
 - **FastAPI support:** The workflow can be used through REST endpoints.
 - **Pytest coverage:** Deterministic detection and validation logic are covered by tests.
 
+### 1. Robust Pipeline Core (Phase 1)
+- Deterministic Event ID Generation (SHA-256)
+- File Upload Security (Chunking, Temp File Cleanup)
+- Ingestion Limits Enforcement
+- Comprehensive Unit Testing & Benchmarking
+
+### 2. Advanced Parsers & Integration (Phase 2) - **COMPLETED**
+- Flexible JSON Reader with Array and Single Object support
+- Strict vs Lenient UTF-8 Encoding Handlers
+- Dynamic Format Detection (JSONL, Syslog, CEF, Text Logs)
+- Universal `CanonicalLogEvent` Mapping
+- Extensible Parser Registry (`agent/parsers/registry.py`)
+- Standardized API Error Handling (HTTP 413, 415, 422)
+
 ## Why This Is Not Just an LLM Chatbot
 
 A simple chatbot would send raw logs directly to an LLM and return a free-form answer. This project uses a controlled agentic workflow:
@@ -147,10 +161,12 @@ To quickly test the ingestion platform without running LLM triage:
 python main.py --ingest-file tests/fixtures/mixed/mixed_formats.log
 ```
 
-To run a benchmark on the ingestion pipeline:
+### Ingestion Benchmarking
+To benchmark the ingestion pipeline with large log files:
 ```bash
-python scripts/benchmark_ingestion.py --generate-mb 10
+python scripts/benchmark_ingestion.py --generate-mb 25
 ```
+This generates a mock log file and evaluates events-per-second (EPS) performance.
 
 **API Mode:**
 Run the REST API:
