@@ -1,4 +1,3 @@
-import pytest
 from agent.parsers.cef import CEFParser
 from agent.parsers.base import ParseContext
 

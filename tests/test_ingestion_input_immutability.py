@@ -1,4 +1,3 @@
-import pytest
 from agent.ingestion.pipeline import IngestionPipeline
 
 def test_immutability():

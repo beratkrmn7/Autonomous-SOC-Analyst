@@ -1,4 +1,3 @@
-import pytest
 from pathlib import Path
 from agent.ingestion.readers import detect_input_format
 from agent.ingestion.models import InputFormat

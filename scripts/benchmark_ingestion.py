@@ -1,5 +1,4 @@
 import time
-import sys
 import argparse
 from pathlib import Path
 from agent.ingestion.pipeline import IngestionPipeline

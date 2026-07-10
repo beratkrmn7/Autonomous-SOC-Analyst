@@ -1,4 +1,3 @@
-import pytest
 from agent.parsers.registry import ParserRegistry
 from agent.parsers.base import BaseLogParser, ParseContext, ParserMatch
 
@@ -22,5 +21,5 @@ def test_parser_ambiguity(caplog):
     reg = ParserRegistry()
     reg.register(DummyParser1)
     reg.register(DummyParser2)
-    sel = reg.select_parser({}, ParseContext(source_name="t", observed_at="2026-07-10T00:00:00Z"))
+    reg.select_parser({}, ParseContext(source_name="t", observed_at="2026-07-10T00:00:00Z"))
     assert "Parser ambiguity detected" in caplog.text

@@ -1,7 +1,7 @@
 import pytest
-from pathlib import Path
 from agent.ingestion.readers import iter_jsonl_records
-from agent.ingestion.limits import IngestionLimits, RecordLimitExceededError
+from agent.ingestion.limits import IngestionLimits
+from agent.errors import RecordLimitExceededError
 
 def test_record_limit(tmp_path):
     p = tmp_path / "test.jsonl"

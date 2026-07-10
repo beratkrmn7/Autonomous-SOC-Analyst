@@ -1,7 +1,5 @@
-import pytest
 from agent.parsers.registry import ParserRegistry
 from agent.parsers.base import BaseLogParser, ParseContext, ParserMatch
-from agent.schema import CanonicalLogEvent
 
 class DummyParser1(BaseLogParser):
     name = "dummy1"

@@ -1,4 +1,3 @@
-import pytest
 from agent.ingestion.validation import validate_and_normalize
 from agent.schema import CanonicalLogEvent
 

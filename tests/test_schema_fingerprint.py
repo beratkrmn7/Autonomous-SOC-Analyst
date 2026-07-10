@@ -1,4 +1,3 @@
-import pytest
 from agent.ingestion.fingerprint import get_schema_fingerprint
 
 def test_json_fingerprint():

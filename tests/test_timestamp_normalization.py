@@ -1,4 +1,3 @@
-import pytest
 from agent.parsers.helpers import normalize_timestamp
 from datetime import timezone
 

@@ -1,4 +1,3 @@
-import pytest
 import subprocess
 
 def test_cli_ingest_mode():

@@ -1,4 +1,3 @@
-import pytest
 from agent.parsers.mock_parser import MockParser
 from agent.parsers.base import ParseContext
 

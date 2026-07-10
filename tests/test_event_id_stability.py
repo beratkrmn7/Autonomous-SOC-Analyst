@@ -1,4 +1,3 @@
-import pytest
 from agent.ingestion.pipeline import IngestionPipeline
 
 def test_event_id_stability():

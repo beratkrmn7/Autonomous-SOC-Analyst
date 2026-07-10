@@ -1,4 +1,3 @@
-import pytest
 from agent.parsers.syslog import SyslogParser
 from agent.parsers.base import ParseContext
 
