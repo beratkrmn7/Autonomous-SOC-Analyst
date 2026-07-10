@@ -5,8 +5,6 @@ import hashlib
 from typing import Union, Iterable, Dict, Any, Optional
 from pathlib import Path
 
-from agent.config import get_settings
-settings = get_settings()
 from agent.ingestion.models import (
     InputFormat, ParseStatus, RecordEnvelope, ParseFailure, 
     IngestionResult
@@ -20,6 +18,9 @@ from agent.ingestion.readers import (
 from agent.ingestion.validation import validate_and_normalize
 from agent.parsers.base import ParseContext
 from agent.parsers.registry import ParserRegistry, default_registry
+
+from agent.config import get_settings
+settings = get_settings()
 
 logger = logging.getLogger(__name__)
 
@@ -165,7 +166,7 @@ class IngestionPipeline:
         status: ParseStatus, 
         error_code: str, 
         message: str,
-        parser_name: str = None
+        parser_name: Optional[str] = None
     ):
         if status == ParseStatus.UNSUPPORTED_SCHEMA:
             result.metrics.unsupported_records += 1

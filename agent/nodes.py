@@ -2,8 +2,7 @@ import json
 import re
 import datetime
 from typing import Literal
-from dotenv import load_dotenv
-load_dotenv()
+
 
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_groq import ChatGroq
@@ -28,7 +27,10 @@ from agent.tools import (
 from agent.config import get_settings
 from agent.errors import ConfigurationError
 
+from dotenv import load_dotenv
 import logging
+
+load_dotenv()
 logger = logging.getLogger(__name__)
 
 
@@ -106,8 +108,9 @@ def automated_detection_node(state: IncidentState) -> dict:
             "message": res.get("message", ""),
             "matched_event_ids": res.get("matched_event_ids", [])
         })
-        if res.get("candidate_evidence"):
-            candidate_evidence.extend(res.get("candidate_evidence"))
+        ev_list = res.get("candidate_evidence")
+        if ev_list:
+            candidate_evidence.extend(ev_list)
             
     logger.debug(f"DEBUG: detected_signals = {json.dumps(detected_signals, indent=2)}")
 
@@ -172,7 +175,8 @@ def entity_extraction_node(state: IncidentState) -> dict:
             entities["users"].add(log["username"])
         
         endpoint_match = re.search(r' (/[a-zA-Z0-9_/?=-]*) HTTP', log_str)
-        if endpoint_match: entities["endpoints"].add(endpoint_match.group(1))
+        if endpoint_match:
+            entities["endpoints"].add(endpoint_match.group(1))
             
         cmd_match = re.search(r'CMD=(.*?)(?:\"|\}|$)', log_str)
         if cmd_match:

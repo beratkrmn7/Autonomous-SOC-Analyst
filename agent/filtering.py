@@ -34,7 +34,6 @@ class EventFilter:
     def is_noise(self, event: CanonicalLogEvent) -> bool:
         # Standard noise filtering rules
         action = str(event.action).lower()
-        protocol = str(event.protocol).upper()
         
         # 1. Normal allowed web traffic (port 80/443) that isn't excessively large
         if action in ["pass", "allow"] and event.dst_port in [80, 443]:

@@ -235,7 +235,7 @@ def detect_network_flood(raw_logs: list) -> dict:
     # connection attempts with same src/dst in a very short window with mostly blocks.
     
     logs_sorted = sorted(raw_logs, key=lambda x: parse_time(x.get("timestamp", "")))
-    groups: dict[str, List[dict]] = {}
+    groups: dict[tuple, List[dict]] = {}
     for log in logs_sorted:
         src = log.get("src_ip")
         dst = log.get("dst_ip")

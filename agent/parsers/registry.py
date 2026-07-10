@@ -1,5 +1,5 @@
 import logging
-from typing import Type, List, Tuple, Union, Dict, Any, Optional
+from typing import Type, List, Tuple, Union, Dict, Any
 from agent.parsers.base import BaseLogParser, ParseContext, ParserMatch
 from agent.ingestion.models import ParserSelection
 

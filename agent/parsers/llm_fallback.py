@@ -1,5 +1,3 @@
-import logging
-logger = logging.getLogger(__name__)
 
 import json
 from typing import Dict, Any, List
@@ -7,6 +5,9 @@ from pydantic import BaseModel, Field
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_groq import ChatGroq
 from agent.schema import CanonicalLogEvent
+
+import logging
+logger = logging.getLogger(__name__)
 
 class MappingConfig(BaseModel):
     timestamp_key: str = Field(default="", description="JSON key for timestamp")
@@ -25,7 +26,8 @@ class LLMParserAssistant:
         self.structured_llm = None
         
     def _init_llm(self):
-        if self.structured_llm: return
+        if self.structured_llm:
+            return
         from agent.config import get_settings
         from agent.errors import ConfigurationError
         settings = get_settings()
@@ -59,7 +61,8 @@ Do NOT invent keys, only use exactly what is in the JSON.
         
         try:
             self._init_llm()
-            if not self.structured_llm: return MappingConfig()
+            if not self.structured_llm:
+                return MappingConfig()
             mapping = self.structured_llm.invoke(messages)
             return mapping or MappingConfig()
         except Exception as e:
@@ -72,10 +75,11 @@ Do NOT invent keys, only use exactly what is in the JSON.
         """
         # Simple extraction helper
         def get_val(key):
-            if not key: return None
+            if not key:
+                return None
             # support simple dot notation (e.g. source.ip)
             parts = key.split('.')
-            val = raw_log
+            val: Any = raw_log
             for p in parts:
                 if isinstance(val, dict):
                     val = val.get(p)

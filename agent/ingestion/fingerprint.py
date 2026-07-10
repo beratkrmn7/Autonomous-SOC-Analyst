@@ -1,4 +1,3 @@
-import json
 from typing import Dict, Any, Union
 
 def get_json_fingerprint(raw_log: Dict[str, Any], max_depth: int = 3, current_depth: int = 0) -> str:

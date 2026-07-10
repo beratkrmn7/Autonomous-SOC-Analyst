@@ -34,7 +34,8 @@ class CorrelationEngine:
         if unassigned:
             src_groups: dict[str, List[CanonicalLogEvent]] = {}
             for e in unassigned:
-                if not e.src_ip: continue
+                if not e.src_ip:
+                    continue
                 if e.src_ip not in src_groups:
                     src_groups[e.src_ip] = []
                 src_groups[e.src_ip].append(e)
@@ -80,7 +81,9 @@ class CorrelationEngine:
         bundles = []
         groups: dict[tuple[str, int], List[CanonicalLogEvent]] = {}
         for ev in candidates:
-            if not ev.src_ip or not ev.dst_port:
+            if not ev.src_ip:
+                continue
+            if not ev.dst_port:
                 continue
             key = (ev.src_ip, ev.dst_port)
             if key not in groups:
@@ -117,7 +120,9 @@ class CorrelationEngine:
         bundles = []
         groups: dict[tuple[str, str], List[CanonicalLogEvent]] = {}
         for ev in candidates:
-            if not ev.src_ip or not ev.dst_ip:
+            if not ev.src_ip:
+                continue
+            if not ev.dst_ip:
                 continue
             key = (ev.src_ip, ev.dst_ip)
             if key not in groups:
@@ -161,7 +166,8 @@ class CorrelationEngine:
         bundles = []
         groups: dict[str, List[CanonicalLogEvent]] = {}
         for ev in events:
-            if not ev.src_ip: continue
+            if not ev.src_ip:
+                continue
             if ev.src_ip not in groups:
                 groups[ev.src_ip] = []
             groups[ev.src_ip].append(ev)
