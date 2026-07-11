@@ -1,5 +1,5 @@
+from typing import cast, Literal, List
 import ipaddress
-from typing import List
 from agent.detection.models import DetectionSignal
 from agent.detection.config import DetectionSettings
 
@@ -34,11 +34,12 @@ def calculate_signal_confidence(
     boost = (1.0 - (1.0 / (1.0 + extra * 0.5))) * (max_confidence - base_confidence)
     return min(base_confidence + boost, max_confidence)
 
+
 def calculate_incident_severity(
     signals: List[DetectionSignal],
     primary_entity: str,
     settings: DetectionSettings
-) -> str:
+) -> Literal['informational', 'low', 'medium', 'high', 'critical']:
     """
     Calculate incident severity based on the signals and entity context.
     """
@@ -63,7 +64,7 @@ def calculate_incident_severity(
         
     # Example: If internal target is heavily attacked, could bump severity, but for now deterministically rely on rule severity + volume
     
-    return reverse_map.get(highest_severity_val, "medium")
+    return cast(Literal['informational', 'low', 'medium', 'high', 'critical'], reverse_map.get(highest_severity_val, "medium"))
 
 def calculate_incident_confidence(signals: List[DetectionSignal]) -> float:
     if not signals:
