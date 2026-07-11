@@ -18,3 +18,19 @@ def test_pf_firewall_optional_fields():
     assert match.matched
     evt = p.parse(raw, ctx, "E1")
     assert evt.src_ip == "1.1.1.1"
+
+def test_pf_firewall_fqdn_parsing_string():
+    raw = {"sourceFqdns": "source.example.test", "destinationFqdns": "destination.example.test"}
+    p = PfFirewallParser()
+    ctx = ParseContext(source_name="t", observed_at="2026-07-10T00:00:00Z")
+    evt = p.parse(raw, ctx, "E1")
+    assert evt.source_fqdns == ["source.example.test"]
+    assert evt.destination_fqdns == ["destination.example.test"]
+
+def test_pf_firewall_fqdn_parsing_list():
+    raw = {"sourceFqdns": ["s1.example.test", "s2.example.test"], "destinationFqdns": ["d1.example.test", "d2.example.test"]}
+    p = PfFirewallParser()
+    ctx = ParseContext(source_name="t", observed_at="2026-07-10T00:00:00Z")
+    evt = p.parse(raw, ctx, "E1")
+    assert evt.source_fqdns == ["s1.example.test", "s2.example.test"]
+    assert evt.destination_fqdns == ["d1.example.test", "d2.example.test"]

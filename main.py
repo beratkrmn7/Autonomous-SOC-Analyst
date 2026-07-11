@@ -1,6 +1,7 @@
 import json
 import os
 import argparse
+from typing import Optional
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -35,7 +36,7 @@ def run_graph_from_state(initial_state: IncidentState):
         traceback.print_exc()
         return None
 
-def run_graph_from_incident(incident, event_map: dict, signal_map: dict = None) -> IncidentState:
+def run_graph_from_incident(incident, event_map: dict, signal_map: Optional[dict] = None) -> IncidentState:
     signal_map = signal_map or {}
     
     incident_id = incident.incident_id if hasattr(incident, 'incident_id') else incident.get("incident_id")

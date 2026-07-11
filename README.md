@@ -201,7 +201,9 @@ mypy agent/
 ### CLI Integration Mode
 The deterministic detection engine runs locally during CLI analysis.
 ```bash
-python main.py analyze-file tests/data/sample_logs.jsonl
+python main.py --detect-file data/samples/sanitized_firewall_sample.jsonl
+
+python main.py --file data/samples/sanitized_firewall_sample.jsonl
 ```
 This runs the full ingestion pipeline, applies deterministic detection algorithms, clusters correlated incidents, and triggers the AI triage agent on each incident.
 

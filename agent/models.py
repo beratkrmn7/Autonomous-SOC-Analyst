@@ -102,5 +102,11 @@ class IncidentState(TypedDict):
     entities: NotRequired[dict]
     validated_evidence: NotRequired[List[dict]]
     rejected_evidence: NotRequired[List[dict]]
+    evidence: NotRequired[List[dict]]
+    triage_verdict: NotRequired[str]
+    incident_type: NotRequired[str]
+    severity: NotRequired[str]
+    confidence: NotRequired[float]
+    recommended_actions: NotRequired[List[Any]]
     
     detection_engine_executed: NotRequired[bool]
