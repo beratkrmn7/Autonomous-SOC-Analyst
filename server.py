@@ -165,51 +165,38 @@ async def ingest_file(file: UploadFile = File(...)):
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
+
 @app.post("/detect/file")
 async def detect_file(file: UploadFile = File(...)):
     """
-    Run the deterministic Detection Engine over a log file.
-    Does not call the LLM triage agent.
+    Analyze a raw JSONL log file, performing full ingestion, filtering, and Phase 3 DetectionEngine logic.
+    Returns signals and incidents without invoking the LLM triage graph.
     """
+    from agent.detection.engine import DetectionEngine
     temp_path = await secure_save_upload(file)
+        
     try:
         ingest = IngestionPipeline()
-        result = ingest.ingest_file(temp_path)
+        filter_engine = EventFilter()
+        detection_engine = DetectionEngine()
         
-        from agent.detection.engine import DetectionEngine
-        engine = DetectionEngine()
-        det_result = engine.analyze(result.events)
+        ingest_result = ingest.ingest_file(temp_path)
+        filter_result = filter_engine.filter_events(ingest_result.events)
         
-        incidents_out = []
-        for inc in det_result.incidents:
-            incidents_out.append({
-                "incident_id": inc.incident_id,
-                "incident_type": inc.incident_type,
-                "severity": inc.severity,
-                "confidence": inc.confidence,
-                "first_seen": inc.first_seen.isoformat() if inc.first_seen else None,
-                "last_seen": inc.last_seen.isoformat() if inc.last_seen else None,
-                "event_count": len(inc.event_ids),
-                "signal_count": len(inc.signal_ids),
-                "primary_entity": inc.primary_entity
-            })
-            
+        det_result = detection_engine.analyze(filter_result.candidates, filter_result.context)
+        
         return {
-            "ingestion": {
-                "total_records": result.metrics.total_records,
-                "parsed_records": result.metrics.parsed_records,
-                "failed_records": result.metrics.failed_records,
-                "unsupported_records": result.metrics.unsupported_records
-            },
-            "detection": {
-                "signal_count": det_result.metrics.signal_count,
-                "suppressed_signal_count": det_result.metrics.suppressed_signal_count,
-                "incident_count": det_result.metrics.incident_count,
-                "merge_count": det_result.metrics.merge_count,
-                "duration_ms": det_result.metrics.duration_ms
-            },
-            "incidents": incidents_out
+            "ingestion_metrics": ingest_result.metrics.model_dump(),
+            "filtering_metrics": filter_result.metrics,
+            "detection_metrics": det_result.metrics.model_dump(),
+            "signals": [s.model_dump() for s in det_result.signals],
+            "incidents": [i.model_dump() for i in det_result.incidents],
+            "suppressed_signals": [s.model_dump() for s in det_result.suppressed_signals],
+            "warnings": det_result.warnings
         }
+    except Exception as e:
+        print(f"Error in /detect/file: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
@@ -217,41 +204,56 @@ async def detect_file(file: UploadFile = File(...)):
 @app.post("/analyze/file")
 async def analyze_file(file: UploadFile = File(...)):
     """
-    Analyze a raw JSONL log file, performing full ingestion, filtering, and correlation.
+    Analyze a raw JSONL log file, performing full ingestion, filtering, correlation, and LLM triage.
     """
+    from agent.detection.engine import DetectionEngine
     temp_path = await secure_save_upload(file)
         
     try:
         ingest = IngestionPipeline()
         filter_engine = EventFilter()
-        correlator = CorrelationEngine()
+        detection_engine = DetectionEngine()
         
         ingest_result = ingest.ingest_file(temp_path)
         filter_result = filter_engine.filter_events(ingest_result.events)
-        bundles = correlator.build_incidents(filter_result.candidates, filter_result.context)
+        
+        # Phase 3 Engine directly
+        det_result = detection_engine.analyze(filter_result.candidates, filter_result.context)
+        
+        # Build event map to resolve full CanonicalLogEvent dictionaries for Graph
+        event_map = {e.event_id: e.model_dump(mode="json") for e in ingest_result.events if e.event_id}
         
         incident_summaries = []
-        for bundle in bundles:
-            canonical_events = [log.model_dump(mode="json") for log in bundle.events]
+        for inc in det_result.incidents:
+            canonical_events = [event_map[eid] for eid in inc.event_ids if eid in event_map]
             
             detected_signals = []
             candidate_evidence = []
-            if bundle.correlation_reason:
+            
+            # Resolve the signals that formed this incident
+            sig_list = [s for s in det_result.signals if s.signal_id in inc.signal_ids]
+            
+            for sig in sig_list:
                 detected_signals.append({
-                    "detector_name": "CorrelationEngine",
+                    "detector_name": sig.rule_name,
                     "status": "alert",
-                    "message": bundle.correlation_reason,
-                    "matched_event_ids": bundle.event_ids
+                    "message": f"{sig.rule_name} detected targeting {len(sig.target_entities)} entities. Severity: {sig.severity}",
+                    "matched_event_ids": sig.event_ids
                 })
-                for ev in bundle.events:
-                    candidate_evidence.append({
-                        "event_id": ev.event_id,
-                        "quote": ev.raw_message or json.dumps(ev.original_log),
-                        "original_fields": ev.original_log
-                    })
+            
+            # Merge evidence from the new incident bundle
+            for ev in inc.evidence:
+                candidate_evidence.append({
+                    "event_id": ev.event_id,
+                    "quote": ev.quote,
+                    "reason": ev.reason,
+                    "source": ev.source,
+                    "original_fields": ev.original_fields,
+                    "correlation_context": ev.correlation_context
+                })
                     
             initial_state: IncidentState = {
-                "incident_id": bundle.incident_id,
+                "incident_id": inc.incident_id,
                 "canonical_events": canonical_events,
                 "messages": [],
                 "iteration_count": 0,
@@ -264,10 +266,10 @@ async def analyze_file(file: UploadFile = File(...)):
             }
             
             final_state = agent_app.invoke(initial_state)
-            incident_store[bundle.incident_id] = final_state
+            incident_store[inc.incident_id] = final_state
             
             incident_summaries.append({
-                "incident_id": bundle.incident_id,
+                "incident_id": inc.incident_id,
                 "triage_verdict": final_state.get('triage_verdict'),
                 "incident_type": final_state.get('incident_type'),
                 "severity": final_state.get('severity'),

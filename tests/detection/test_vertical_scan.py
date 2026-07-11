@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime
 from agent.schema import CanonicalLogEvent
 from agent.detection.detectors.vertical_scan import VerticalScanRule
 from agent.detection.detectors.base import DetectionContext

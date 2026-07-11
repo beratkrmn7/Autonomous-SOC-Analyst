@@ -15,9 +15,6 @@ from agent.tools import (
     detect_suspicious_commands,
     detect_bruteforce_pattern,
     detect_failed_then_success_login,
-    detect_port_scan_pattern,
-    detect_network_flood,
-    detect_dns_tunneling_pattern,
     detect_malware_hash_alert,
     detect_lateral_movement_pattern,
     detect_backup_false_positive,
@@ -49,7 +46,7 @@ def get_triage_llm():
     llm = ChatGroq(
         model=settings.llm_model, 
         temperature=0,
-        api_key=settings.groq_api_key.get_secret_value() if settings.groq_api_key else None,  # type: ignore
+        api_key=settings.groq_api_key.get_secret_value(),
         max_retries=2
     )
     _llm_cache = llm.bind_tools(tools_list)
@@ -131,7 +128,7 @@ def automated_detection_node(state: IncidentState) -> dict:
     automated_results.append(detect_backup_false_positive(canonical_events_dict))
     
     # Note: detect_dns_tunneling_pattern, detect_port_scan_pattern, and detect_network_flood 
-    # were replaced/disabled in Phase 3.
+    # were replaced/disabled in Phase 3. The automated_detection_node only runs non-network legacy rules.
     
     # Filter out empty/clean results to save context
     meaningful_results = [res for res in automated_results if res.get("status") != "clean"]
@@ -153,12 +150,12 @@ def automated_detection_node(state: IncidentState) -> dict:
 
     # Also log it to tool_results for generic history display
     formatted_tool_results = []
-    for sig in detected_signals:
+    for dsig in detected_signals:
          formatted_tool_results.append({
-            "tool_name": sig["detector_name"],
+            "tool_name": dsig["detector_name"],
             "timestamp": timestamp,
-            "result_summary": sig["message"],
-            "matched_event_ids": sig["matched_event_ids"]
+            "result_summary": dsig["message"],
+            "matched_event_ids": dsig["matched_event_ids"]
         })
 
     return {

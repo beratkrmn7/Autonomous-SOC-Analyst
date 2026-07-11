@@ -37,9 +37,10 @@ class LLMParserAssistant:
             raise ConfigurationError("Missing API key for LLM fallback.")
             
         self.llm = ChatGroq(
-            model="llama-3.1-70b-versatile", 
+            model=settings.llm_model, 
             temperature=0, 
-            api_key=settings.groq_api_key.get_secret_value() if settings.groq_api_key else None  # type: ignore
+            api_key=settings.groq_api_key.get_secret_value() if settings.groq_api_key else None,
+            max_retries=2
         )
         self.structured_llm = self.llm.with_structured_output(MappingConfig)
         

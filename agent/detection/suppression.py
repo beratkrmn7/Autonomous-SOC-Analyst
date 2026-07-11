@@ -1,7 +1,6 @@
 import ipaddress
-from typing import List, Dict, Any, Optional
+from typing import List, Optional
 from agent.detection.models import DetectionSignal
-from agent.detection.config import DetectionSettings
 
 class SuppressionPolicy:
     def __init__(self):

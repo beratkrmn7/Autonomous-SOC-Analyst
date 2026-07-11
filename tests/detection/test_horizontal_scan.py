@@ -1,4 +1,3 @@
-import pytest
 from datetime import datetime, timedelta
 from agent.schema import CanonicalLogEvent
 from agent.detection.detectors.horizontal_scan import HorizontalScanRule

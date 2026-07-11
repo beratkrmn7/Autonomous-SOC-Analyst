@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import List, Sequence, Tuple, Dict, Any
 from collections import defaultdict, deque
 from agent.schema import CanonicalLogEvent
@@ -54,8 +55,8 @@ class HorizontalScanRule(BaseDetectionRule):
             
             for match_events, match_context in matches:
                 event_ids = [e.event_id for e in match_events]
-                first_seen = match_events[0].timestamp
-                last_seen = match_events[-1].timestamp
+                first_seen = match_events[0].timestamp or datetime.now()
+                last_seen = match_events[-1].timestamp or datetime.now()
                 
                 sig_id = generate_signal_id(self.rule_id, self.version, src_ip, f"port_{dst_port}", first_seen, event_ids)
                 

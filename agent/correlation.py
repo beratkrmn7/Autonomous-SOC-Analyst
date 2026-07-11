@@ -1,9 +1,8 @@
-from typing import List, Dict, Any
-from datetime import datetime
+from typing import List
 from agent.schema import CanonicalLogEvent
-from agent.models import IncidentBundle as OldIncidentBundle, EvidenceItem
+from agent.models import IncidentBundle as OldIncidentBundle
 from agent.detection.engine import DetectionEngine
-from agent.detection.models import DetectionResult, IncidentBundle as NewIncidentBundle
+from agent.detection.models import DetectionResult
 
 class CorrelationEngine:
     """
@@ -17,8 +16,15 @@ class CorrelationEngine:
         # Run new detection engine
         result: DetectionResult = self.engine.analyze(candidate_events, context_events)
         
+        # Build event map
+        event_map = {e.event_id: e for e in candidate_events if e.event_id}
+        context_map = {e.event_id: e for e in context_events if e.event_id}
+        
         old_bundles = []
         for inc in result.incidents:
+            resolved_events = [event_map[eid] for eid in inc.event_ids if eid in event_map]
+            resolved_context = [context_map[eid] for eid in inc.context_event_ids if eid in context_map]
+            
             # Convert new IncidentBundle to old IncidentBundle
             old_bundle = OldIncidentBundle(
                 incident_id=inc.incident_id,
@@ -29,8 +35,8 @@ class CorrelationEngine:
                 destination_ips=inc.target_entities,
                 destination_ports=[], # Extracted from metrics if needed
                 event_ids=inc.event_ids,
-                events=[], # We don't populate full events anymore to save memory, nodes should resolve if needed
-                context_events=[],
+                events=resolved_events,
+                context_events=resolved_context,
                 correlation_reason=f"Correlated {len(inc.signal_ids)} signals: {', '.join(inc.signal_ids)}",
                 correlation_metrics=inc.metrics,
                 severity_hint=inc.severity,

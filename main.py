@@ -78,9 +78,11 @@ def run_incident_graph(incident_bundle, raw_logs=None):
 def analyze_file(file_path: str):
     console.print(f"[bold blue]Starting File Analysis: {file_path}[/bold blue]")
     
+    from agent.detection.engine import DetectionEngine
+    
     ingest = IngestionPipeline()
     filter_engine = EventFilter()
-    correlator = CorrelationEngine()
+    detection_engine = DetectionEngine()
     
     # 1. Ingestion
     ingest_result = ingest.ingest_file(file_path)
@@ -90,13 +92,54 @@ def analyze_file(file_path: str):
     filter_result = filter_engine.filter_events(ingest_result.events)
     console.print(f"Filtering complete. Noise: {filter_result.metrics['noise']}. Context: {filter_result.metrics['context']}. Candidates: {filter_result.metrics['candidates']}.")
     
-    # 3. Correlation
-    bundles = correlator.build_incidents(filter_result.candidates, filter_result.context)
-    console.print(f"Correlation generated {len(bundles)} incidents.")
+    # 3. Detection & Correlation (Phase 3 Engine)
+    det_result = detection_engine.analyze(filter_result.candidates, filter_result.context)
+    console.print(f"Detection engine generated {det_result.metrics.incident_count} incidents from {det_result.metrics.signal_count} signals.")
+    
+    event_map = {e.event_id: e.model_dump(mode="json") for e in ingest_result.events if e.event_id}
     
     # 4. Graph Invocation
-    for bundle in bundles:
-        run_incident_graph(bundle)
+    for inc in det_result.incidents:
+        canonical_events = [event_map[eid] for eid in inc.event_ids if eid in event_map]
+        detected_signals = []
+        candidate_evidence = []
+        
+        # Resolve the signals that formed this incident
+        sig_list = [s for s in det_result.signals if s.signal_id in inc.signal_ids]
+        
+        for sig in sig_list:
+            detected_signals.append({
+                "detector_name": sig.rule_name,
+                "status": "alert",
+                "message": f"{sig.rule_name} detected targeting {len(sig.target_entities)} entities. Severity: {sig.severity}",
+                "matched_event_ids": sig.event_ids
+            })
+        
+        # Merge evidence from the new incident bundle
+        for ev in inc.evidence:
+            candidate_evidence.append({
+                "event_id": ev.event_id,
+                "quote": ev.quote,
+                "reason": ev.reason,
+                "source": ev.source,
+                "original_fields": ev.original_fields,
+                "correlation_context": ev.correlation_context
+            })
+                
+        initial_state: IncidentState = {
+            "incident_id": inc.incident_id,
+            "canonical_events": canonical_events,
+            "messages": [],
+            "iteration_count": 0,
+            "mitre_techniques": [],
+            "candidate_evidence": candidate_evidence,
+            "detected_signals": detected_signals,
+            "search_history": [],
+            "tool_results": [],
+            "errors": []
+        }
+        
+        run_incident_graph(initial_state)
         print("\n" + "="*50 + "\n")
 
 def run_mock_test():
@@ -170,13 +213,15 @@ def detect_file_only(file_path: str):
     console.print(f"[bold blue]Starting File Detection: {file_path}[/bold blue]")
     
     ingest = IngestionPipeline()
+    filter_engine = EventFilter()
     result = ingest.ingest_file(file_path)
+    filter_result = filter_engine.filter_events(result.events)
     
     from agent.detection.engine import DetectionEngine
     engine = DetectionEngine()
     
     console.print("[bold blue]Running Detection Engine...[/bold blue]")
-    det_result = engine.analyze(result.events)
+    det_result = engine.analyze(filter_result.candidates, filter_result.context)
     
     console.print("\n[bold cyan]--- DETECTION SUMMARY ---[/bold cyan]")
     console.print(f"Total Canonical Events: {det_result.metrics.total_events}")

@@ -1,4 +1,4 @@
-from typing import List, Dict, Type
+from typing import List, Dict
 import logging
 
 from agent.detection.detectors.base import BaseDetectionRule

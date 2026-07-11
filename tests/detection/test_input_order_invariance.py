@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from agent.schema import CanonicalLogEvent
 from agent.detection.engine import DetectionEngine
 from agent.detection.config import DetectionSettings
@@ -12,8 +12,8 @@ def test_order_invariance():
     engine = DetectionEngine(registry=registry, settings=settings)
     
     events = [
-        CanonicalLogEvent(event_id="e1", timestamp=datetime(2025,1,1), src_ip="1.2.3.4", dst_ip="10.0.0.1", dst_port=80, action="block", parser_name="test", parse_status="success"),
-        CanonicalLogEvent(event_id="e2", timestamp=datetime(2025,1,1), src_ip="1.2.3.4", dst_ip="10.0.0.2", dst_port=80, action="block", parser_name="test", parse_status="success")
+        CanonicalLogEvent(event_id="e1", timestamp=datetime(2025,1,1, tzinfo=timezone.utc), src_ip="1.2.3.4", dst_ip="10.0.0.1", dst_port=80, action="block", parser_name="test", parse_status="success"),
+        CanonicalLogEvent(event_id="e2", timestamp=datetime(2025,1,1, tzinfo=timezone.utc), src_ip="1.2.3.4", dst_ip="10.0.0.2", dst_port=80, action="block", parser_name="test", parse_status="success")
     ]
     
     res1 = engine.analyze(events)

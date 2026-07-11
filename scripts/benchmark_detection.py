@@ -1,6 +1,6 @@
 import time
 import argparse
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import psutil
 import os
 import sys
@@ -10,7 +10,7 @@ from agent.detection.engine import DetectionEngine
 
 def generate_events(num_records: int) -> list[CanonicalLogEvent]:
     events = []
-    base_time = datetime.now()
+    base_time = datetime.now(timezone.utc)
     
     # 90% normal, 10% anomalies
     for i in range(num_records):
@@ -38,7 +38,7 @@ def run_benchmark(num_records: int):
     
     engine = DetectionEngine()
     
-    print(f"Starting Detection Engine benchmark...")
+    print("Starting Detection Engine benchmark...")
     
     process = psutil.Process(os.getpid())
     mem_before = process.memory_info().rss

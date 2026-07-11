@@ -1,6 +1,5 @@
 from agent.detection.engine import DetectionEngine
 from agent.schema import CanonicalLogEvent
-from datetime import datetime
 
 def test_engine_empty():
     engine = DetectionEngine()

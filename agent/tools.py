@@ -292,7 +292,22 @@ def detect_network_flood(raw_logs: list) -> dict:
     return result
 
 def detect_dns_tunneling_pattern(raw_logs: list) -> dict:
-    return {"status": "clean"}
+    dns_logs = [log for log in raw_logs if log.get("event_type") == "DNS_QUERY"]
+    matched = []
+    for log in dns_logs:
+        msg = log.get("raw_message", "")
+        # A simple check for long, random-looking subdomains (ignoring legitimate ones like dns.google)
+        if "dns.google" in msg:
+            continue
+        # Look for a subdomain longer than 30 chars
+        match = re.search(r'([A-Za-z0-9_-]{30,})\.[a-zA-Z0-9-]+\.[a-zA-Z]{2,}', msg)
+        if match:
+            matched.append(log)
+            
+    if not matched:
+        return format_detection_result("detect_dns_tunneling_pattern", "DNS Tunneling", [], is_benign=True)
+        
+    return format_detection_result("detect_dns_tunneling_pattern", "DNS Tunneling", matched)
 
 def detect_malware_hash_alert(raw_logs: list) -> dict:
     edr = [log for log in raw_logs if "EDR_ALERT" in log.get("event_type", "")]

@@ -1,5 +1,6 @@
 import time
-from typing import List, Dict, Set
+from datetime import datetime
+from typing import List, Optional, Any, Set
 import logging
 from collections import defaultdict
 
@@ -21,7 +22,7 @@ class DetectionEngine:
         self,
         registry: RuleRegistry = default_registry,
         settings: DetectionSettings = default_settings,
-        suppression_policy: SuppressionPolicy = None
+        suppression_policy: Optional[SuppressionPolicy] = None
     ):
         if registry is default_registry and not registry.get_all_rules():
             from agent.detection.detectors import register_default_rules
@@ -42,10 +43,36 @@ class DetectionEngine:
         metrics = DetectionMetrics()
         metrics.total_events = len(candidate_events)
         
-        # 1. Eligibility Check
-        eligible_events = []
+        warnings = []
+        
+        # 1. Deduplicate by event_id and raw_record_hash
+        seen_keys: Set[str] = set()
+        deduped_events = []
         for e in candidate_events:
-            if not e.timestamp or not e.event_id:
+            if not e.event_id:
+                warnings.append(f"Skipped event without ID")
+                metrics.skipped_events += 1
+                continue
+            key = f"{e.event_id}|{e.raw_record_hash or ''}"
+            if key in seen_keys:
+                metrics.skipped_events += 1
+                continue
+            seen_keys.add(key)
+            deduped_events.append(e)
+
+        # 2. Eligibility Check
+        eligible_events = []
+        for e in deduped_events:
+            if not e.timestamp:
+                warnings.append(f"Event {e.event_id} skipped: missing timestamp")
+                metrics.skipped_events += 1
+                continue
+            if e.timestamp.tzinfo is None:
+                warnings.append(f"Event {e.event_id} skipped: timezone-naive timestamp")
+                metrics.skipped_events += 1
+                continue
+            if e.parse_status in ["failed", "unsupported_schema", "semantically_invalid"]:
+                warnings.append(f"Event {e.event_id} skipped: invalid parse_status '{e.parse_status}'")
                 metrics.skipped_events += 1
                 continue
             eligible_events.append(e)
@@ -54,11 +81,11 @@ class DetectionEngine:
         
         if not eligible_events:
             metrics.duration_ms = (time.time() - start_time) * 1000
-            return DetectionResult(signals=[], incidents=[], metrics=metrics)
+            return DetectionResult(signals=[], incidents=[], suppressed_signals=[], uncorrelated_event_ids=[], warnings=warnings, metrics=metrics)
             
         # Create detection context
         # We know eligible_events[0].timestamp is not None
-        ctx = DetectionContext(
+        DetectionContext(
             settings=self.settings,
             analysis_started_at=eligible_events[0].timestamp or datetime.now()
         )
@@ -73,7 +100,7 @@ class DetectionEngine:
             
         context = DetectionContext(
             settings=self.settings,
-            analysis_started_at=eligible_events[0].timestamp
+            analysis_started_at=eligible_events[0].timestamp or datetime.now()
         )
 
         all_signals: List[DetectionSignal] = []
@@ -128,9 +155,6 @@ class DetectionEngine:
         )
 
     def _deduplicate_signals(self, signals: List[DetectionSignal]) -> List[DetectionSignal]:
-        # Sort by priority (assuming rule prefix or defined order, for now we will just use basic precedence)
-        # Precedence: Specific Service Probe > Generic Horizontal Scan
-        
         # Map source to signals
         source_signals = defaultdict(list)
         for s in signals:
@@ -139,12 +163,60 @@ class DetectionEngine:
         final_signals = []
         
         for src, sigs in source_signals.items():
-            # Extract probes and scans
-            probes = [s for s in sigs if "probe" in s.rule_id.lower()]
-            scans = [s for s in sigs if "horizontal" in s.rule_id.lower()]
-            others = [s for s in sigs if s not in probes and s not in scans]
+            # 1. Merge overlapping signals from the SAME rule (e.g. continuous sliding window matches)
+            merged_by_rule = []
+            sigs_by_rule = defaultdict(list)
+            for s in sigs:
+                sigs_by_rule[s.rule_id].append(s)
+                
+            for rule_id, rule_sigs in sigs_by_rule.items():
+                # Sort by time
+                rule_sigs.sort(key=lambda x: x.first_seen)
+                
+                merged_list: List[DetectionSignal] = []
+                for current_sig in rule_sigs:
+                    if not merged_list:
+                        merged_list.append(current_sig)
+                        continue
+                        
+                    prev_sig = merged_list[-1]
+                    # Check overlap using event_ids
+                    current_events = set(current_sig.event_ids)
+                    prev_events = set(prev_sig.event_ids)
+                    
+                    intersection = current_events.intersection(prev_events)
+                    union = current_events.union(prev_events)
+                    
+                    if intersection and (current_sig.first_seen - prev_sig.last_seen).total_seconds() <= self.settings.INCIDENT_MERGE_WINDOW_SECONDS:
+                        # Merge current_sig into prev_sig
+                        prev_sig.event_ids = sorted(list(union))
+                        prev_sig.last_seen = max(prev_sig.last_seen, current_sig.last_seen)
+                        # Merge target entities
+                        prev_sig.target_entities = sorted(list(set(prev_sig.target_entities + current_sig.target_entities)))
+                        # Merge evidence (deduping)
+                        seen_ev = {e.event_id for e in prev_sig.evidence}
+                        for ev in current_sig.evidence:
+                            if ev.event_id not in seen_ev:
+                                prev_sig.evidence.append(ev)
+                                seen_ev.add(ev.event_id)
+                        # Re-calculate signal_id to reflect union
+                        from agent.detection.models import generate_signal_id
+                        # Use first target entity as correlation_key for ID generation to keep it simple
+                        corr_key = f"target_{prev_sig.target_entities[0]}" if prev_sig.target_entities else "multiple"
+                        prev_sig.signal_id = generate_signal_id(
+                            prev_sig.rule_id, prev_sig.rule_version, prev_sig.primary_entity, 
+                            corr_key, prev_sig.first_seen, prev_sig.event_ids
+                        )
+                    else:
+                        merged_list.append(current_sig)
+                
+                merged_by_rule.extend(merged_list)
+                
+            # 2. Precedence: Specific Service Probe > Generic Horizontal Scan
+            probes = [s for s in merged_by_rule if "probe" in s.rule_id.lower()]
+            scans = [s for s in merged_by_rule if "horizontal" in s.rule_id.lower()]
+            others = [s for s in merged_by_rule if s not in probes and s not in scans]
             
-            # If there's an RDP or SSH probe, it absorbs horizontal scans that overlap
             kept_scans = []
             for scan in scans:
                 absorbed = False
@@ -153,20 +225,11 @@ class DetectionEngine:
                     probe_events = set(probe.event_ids)
                     if scan_events.intersection(probe_events) and abs((scan.first_seen - probe.first_seen).total_seconds()) < self.settings.INCIDENT_MERGE_WINDOW_SECONDS:
                         absorbed = True
-                        # The specific probe absorbs this generic scan, so we don't include it in final_signals
                         break
                 if not absorbed:
                     kept_scans.append(scan)
                     
-            # Exact duplicate removal
-            seen_sig_hashes = set()
-            src_final = []
-            for s in probes + kept_scans + others:
-                if s.signal_id not in seen_sig_hashes:
-                    seen_sig_hashes.add(s.signal_id)
-                    src_final.append(s)
-                    
-            final_signals.extend(src_final)
+            final_signals.extend(probes + kept_scans + others)
             
         return final_signals
 
@@ -188,8 +251,8 @@ class DetectionEngine:
             
             all_event_ids = set()
             all_target_entities = set()
-            all_evidence = []
-            all_mitre = set()
+            all_evidence: List[Any] = []
+            all_mitre: Set[str] = set()
             all_signal_ids = []
             
             first_seen = sigs[0].first_seen
@@ -205,14 +268,15 @@ class DetectionEngine:
                     for ev in s.evidence:
                         if len(all_evidence) < 10 and ev.event_id not in [e.event_id for e in all_evidence]:
                             all_evidence.append(ev)
-                
-                if s.first_seen < first_seen: first_seen = s.first_seen
-                if s.last_seen > last_seen: last_seen = s.last_seen
+                if s.first_seen < first_seen:
+                    first_seen = s.first_seen
+                if s.last_seen > last_seen:
+                    last_seen = s.last_seen
                 
             sorted_event_ids = sorted(list(all_event_ids))
             
             # Find context events (up to MAX_CONTEXT_EVENTS_PER_INCIDENT)
-            context_ids = []
+            context_ids: List[str] = []
             if context_events:
                 # Basic context matching: Same source IP, close in time, not in event_ids
                 start_window = first_seen.timestamp() - self.settings.INCIDENT_MERGE_WINDOW_SECONDS

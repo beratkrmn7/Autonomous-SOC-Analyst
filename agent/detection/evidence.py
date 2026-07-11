@@ -1,4 +1,4 @@
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from agent.schema import CanonicalLogEvent
 from agent.detection.models import DetectionEvidence
 
@@ -6,7 +6,7 @@ def create_evidence_from_event(
     event: CanonicalLogEvent, 
     reason: str, 
     source_rule: str,
-    correlation_context: Dict[str, Any] = None
+    correlation_context: Optional[Dict[str, Any]] = None
 ) -> DetectionEvidence:
     """
     Safely creates DetectionEvidence from a CanonicalLogEvent.
@@ -15,7 +15,7 @@ def create_evidence_from_event(
     if not event.event_id:
         raise ValueError("Cannot create evidence for event without event_id")
 
-    original_fields = {}
+    original_fields: Dict[str, Any] = {}
     if event.src_ip:
         original_fields["src_ip"] = event.src_ip
     if event.dst_ip:
@@ -47,7 +47,7 @@ def select_representative_evidence(
     max_evidence: int, 
     reason: str, 
     source_rule: str,
-    correlation_context: Dict[str, Any] = None
+    correlation_context: Optional[Dict[str, Any]] = None
 ) -> List[DetectionEvidence]:
     """
     Selects a representative subset of events as evidence to avoid unbounded growth.

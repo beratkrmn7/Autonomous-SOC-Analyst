@@ -1,7 +1,6 @@
 import ipaddress
-from typing import List, Optional
-from agent.schema import CanonicalLogEvent
-from agent.detection.models import DetectionSignal, IncidentBundle
+from typing import List
+from agent.detection.models import DetectionSignal
 from agent.detection.config import DetectionSettings
 
 def is_internal_ip(ip_str: str, internal_networks: List[str]) -> bool:
