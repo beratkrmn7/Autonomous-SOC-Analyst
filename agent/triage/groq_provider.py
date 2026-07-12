@@ -50,7 +50,7 @@ class GroqTriageProvider(TriageProvider):
                         temperature=0,
                         api_key=self.settings.groq_api_key,
                         max_retries=0,
-                        timeout=max(0.1, timeout)
+                        request_timeout=max(0.1, timeout)  # type: ignore[call-arg]
                     )
                     llm_with_tools = temp_llm.bind_tools(tools)
                 else:

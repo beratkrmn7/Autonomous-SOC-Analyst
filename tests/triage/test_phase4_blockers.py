@@ -72,6 +72,29 @@ def test_actual_incidentbundle_round_trip():
         errors=[]
     )
     
+    # Validate that the context seamlessly reconstructs from state["incident"] without loss
+    deserialized = TriageIncidentContext.model_validate(state["incident"])
+    
+    # Assert exact field preservation
+    assert deserialized.incident.incident_type == "test"
+    assert deserialized.incident.incident_family == "test"
+    assert deserialized.incident.severity == "low"
+    assert deserialized.incident.confidence == 1.0
+    assert deserialized.incident.primary_entity == "unknown"
+    assert deserialized.incident.target_entities == []
+    assert deserialized.incident.signal_ids == []
+    assert deserialized.incident.event_ids == ["E01"]
+    assert deserialized.incident.context_event_ids == ["CTX01"]
+    assert deserialized.incident.evidence == []
+    assert deserialized.incident.metrics == {}
+    assert deserialized.incident.mitre_techniques == []
+    assert deserialized.incident.merge_key == "mock"
+    assert len(deserialized.events) == 1
+    assert deserialized.events[0].event_id == "E01"
+    assert len(deserialized.context_events) == 1
+    assert deserialized.context_events[0].event_id == "CTX01"
+    
+    # Verify the actual node run does not fail with validation errors
     res = triage_node(state)
     assert res.get("review_reason") != ReviewReason.INVALID_LLM_OUTPUT.value
 
@@ -80,7 +103,7 @@ def test_true_interrupting_provider_timeout():
     
     class FakeChatGroq:
         def __init__(self, *args, **kwargs):
-            timeout_passed[0] = kwargs.get("timeout")
+            timeout_passed[0] = kwargs.get("request_timeout")
             
         def bind_tools(self, tools):
             return self
