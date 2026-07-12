@@ -19,10 +19,10 @@ def validate_evidence(
     valid_candidate_ids = {c.evidence_id: c for c in triage_input.candidate_evidence}
     trusted_events = context.events + context.context_events
     trusted_event_map = {e.event_id: e for e in trusted_events}
-    from collections import defaultdict
-    detection_evidence_map = defaultdict(list)
+    detection_evidence_map = {}
     for ev in context.incident.evidence:
-        detection_evidence_map[ev.event_id].append(ev)
+        key = f"{ev.event_id}:{ev.source}:{ev.quote}:{ev.reason}"
+        detection_evidence_map[key] = ev
     
     seen_ids = set()
     
@@ -123,26 +123,22 @@ def validate_evidence(
                 ))
                 continue
                 
-        # Validate source/provenance
+        # Validate source/provenance identity
         if candidate.source:
-            if candidate.event_id in detection_evidence_map:
-                original_evidences = detection_evidence_map[candidate.event_id]
-                if not any(candidate.source == original_ev.source for original_ev in original_evidences):
-                    results.append(EvidenceValidationResult(
-                        evidence_id=ev_id,
-                        event_id=candidate.event_id,
-                        status="rejected",
-                        rejection_reason=RejectionReason.EVIDENCE_REJECTED # Mismatch source provenance
-                    ))
-                    continue
+            # Check if this exact piece of evidence came from the detection engine
+            candidate_key = f"{candidate.event_id}:{candidate.source}:{candidate.quote}:{candidate.reason}"
+            
+            if candidate_key in detection_evidence_map:
+                # Exact provenance match
+                pass
             else:
-                # If it's a context event or dynamically found event, source should match parser/source_name
+                # Check if it's a context event or dynamically found event
                 if candidate.source != trusted_event.source_name and candidate.source != trusted_event.parser_name:
                     results.append(EvidenceValidationResult(
                         evidence_id=ev_id,
                         event_id=candidate.event_id,
                         status="rejected",
-                        rejection_reason=RejectionReason.EVIDENCE_REJECTED # Mismatch source
+                        rejection_reason=RejectionReason.EVIDENCE_REJECTED # Mismatch source provenance
                     ))
                     continue
                 

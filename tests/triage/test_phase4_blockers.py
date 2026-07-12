@@ -13,10 +13,9 @@ from agent.triage.validation import validate_evidence
 from agent.triage.claims import validate_claims
 from agent.triage.groq_provider import GroqTriageProvider
 from agent.triage.runner import TriageRunner
-from agent.triage.provider import TriageProviderRequest
 from agent.triage.cache import InMemoryTriageCache
 from agent.config import get_settings
-from agent.triage.exceptions import ProviderTimeoutError, ProviderRateLimitError, ProviderAuthenticationError
+from agent.triage.exceptions import ProviderAuthenticationError
 from fastapi.testclient import TestClient
 from server import app as fast_app
 from agent.nodes import triage_node, evidence_validation_node, action_recommendation_node
@@ -77,34 +76,62 @@ def test_actual_incidentbundle_round_trip():
     assert res.get("review_reason") != ReviewReason.INVALID_LLM_OUTPUT.value
 
 def test_true_interrupting_provider_timeout():
-    class BlockingLLM:
+    timeout_passed = [None]
+    
+    class FakeChatGroq:
+        def __init__(self, *args, **kwargs):
+            timeout_passed[0] = kwargs.get("timeout")
+            
         def bind_tools(self, tools):
             return self
-        def invoke(self, *args, **kwargs):
-            # Simulate a blocking call that ignores normal thread interrupts
-            # but respects native HTTP timeout if properly configured
-            timeout = kwargs.get("timeout", 0)
-            if timeout > 0:
-                time.sleep(timeout + 0.1)
-                raise ProviderTimeoutError("Native HTTP Timeout")
-            time.sleep(5)
-            return MagicMock()
             
-    provider = GroqTriageProvider(llm=BlockingLLM())
-    # Set custom injection to False so it uses native ChatGroq timeout instantiation logic in provider
-    # wait, our BlockingLLM isn't ChatGroq so it will fall back to bind_tools timeout pass.
-    # We will test the provider handling of the timeout exception.
-    
-    request = TriageProviderRequest(
-        incident_id="TEST",
-        triage_input=MagicMock(limited_context_events=[]),
-        system_prompt="",
-        context={"triage_input": MagicMock(limited_context_events=[])},
-        deadline=time.monotonic() + 1.0 # 1 second in the future
-    )
-    
-    with pytest.raises(ProviderTimeoutError):
-        provider.invoke(request)
+        def invoke(self, *args, **kwargs):
+            t = timeout_passed[0]
+            if t is not None:
+                time.sleep(t)
+            import groq
+            raise groq.APITimeoutError(MagicMock())
+            
+    with patch('agent.triage.groq_provider.get_settings') as mock_settings, patch('agent.triage.groq_provider.ChatGroq', FakeChatGroq):
+        m = MagicMock()
+        m.llm_enabled = True
+        m.groq_api_key = "mock"
+        m.triage_timeout_seconds = 0.5
+        m.llm_model = "test"
+        m.max_agent_iterations = 5
+        m.llm_max_retries = 0
+        m.llm_retry_base_seconds = 0.01
+        m.llm_retry_max_seconds = 0.01
+        mock_settings.return_value = m
+        
+        provider = GroqTriageProvider()
+        provider._custom_llm_injected = False
+        
+        runner = TriageRunner(provider=provider, cache=InMemoryTriageCache())
+        runner.settings.triage_timeout_seconds = 0.5
+        
+        context = TriageIncidentContext(
+            incident=DetectionIncidentBundle(
+                incident_id="INC-001", incident_type="test", incident_family="test", title="test", severity="low",
+                confidence=1.0, primary_entity="unknown", target_entities=[], signal_ids=[], evidence=[], metrics={},
+                mitre_techniques=[], merge_key="mock", event_ids=[], context_event_ids=[],
+                first_seen=datetime.datetime.now(datetime.timezone.utc), last_seen=datetime.datetime.now(datetime.timezone.utc)
+            ),
+            events=[], context_events=[]
+        )
+        
+        start = time.monotonic()
+        result = runner.run({}, context)
+        elapsed = time.monotonic() - start
+        
+        assert timeout_passed[0] is not None
+        assert 0.4 < timeout_passed[0] < 0.6
+        assert 0.4 < elapsed < 1.0 # Tolerant but definitely not 5 seconds
+        assert result.review_reason == ReviewReason.PROVIDER_TIMEOUT
+        assert result.submission is not None
+        assert result.submission.triage_verdict == TriageVerdict.NEEDS_REVIEW
+        assert result.submission.severity == TriageSeverity.NONE
+        assert result.submission.confidence_score == 0.0
 
 def test_auth_failure_mapping():
     provider = GroqTriageProvider(llm=MagicMock())
@@ -114,43 +141,74 @@ def test_auth_failure_mapping():
             provider.invoke(MagicMock(context={"triage_input": MagicMock()}, deadline=None, triage_input=MagicMock(), system_prompt=""))
 
 def test_rate_limit_then_success():
-    GroqTriageProvider(llm=MagicMock())
+    calls = [0]
     
-    calls = 0
-    def mock_call():
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            raise ProviderRateLimitError("rate limited")
-        from agent.triage.provider import TriageProviderResponse
-        from agent.triage.models import TriageSubmission
-        return TriageProviderResponse(
-            submission=TriageSubmission(
-                triage_verdict=TriageVerdict.FALSE_POSITIVE,
-                incident_type="other",
-                severity=TriageSeverity.NONE,
-                confidence_score=1.0,
-                summary="test",
-                selected_evidence_ids=[],
-                claims=[]
+    class FakeChatGroq:
+        def __init__(self, *args, **kwargs):
+            pass
+            
+        def bind_tools(self, tools):
+            return self
+            
+        def invoke(self, *args, **kwargs):
+            calls[0] += 1
+            if calls[0] == 1:
+                import groq
+                raise groq.RateLimitError("rate limited", response=MagicMock(), body=None)
+            return MagicMock(
+                tool_calls=[{
+                    "name": "submit_triage_result",
+                    "args": {
+                        "triage_verdict": "false_positive",
+                        "incident_type": "other",
+                        "severity": "none",
+                        "confidence_score": 1.0,
+                        "summary": "test",
+                        "selected_evidence_ids": [],
+                        "claims": []
+                    },
+                    "id": "call_1"
+                }],
+                response_metadata={"token_usage": {"prompt_tokens": 10, "completion_tokens": 10}}
             )
+            
+    with patch('agent.triage.groq_provider.get_settings') as mock_settings, patch('agent.triage.groq_provider.ChatGroq', FakeChatGroq):
+        m = MagicMock()
+        m.llm_enabled = True
+        m.groq_api_key = "mock"
+        m.llm_retry_base_seconds = 0.01
+        m.llm_retry_max_seconds = 0.01
+        m.llm_max_retries = 3
+        m.llm_model = "test"
+        m.max_agent_iterations = 5
+        mock_settings.return_value = m
+        
+        provider = GroqTriageProvider()
+        provider._custom_llm_injected = False
+        
+        # Decrease delays to make test run fast
+        provider.settings.llm_retry_base_seconds = 0.01
+        provider.settings.llm_retry_max_seconds = 0.01
+        
+        runner = TriageRunner(provider=provider, cache=InMemoryTriageCache())
+        
+        context = TriageIncidentContext(
+            incident=DetectionIncidentBundle(
+                incident_id="INC-RATE-LIMIT", incident_type="test", incident_family="test", title="test", severity="low",
+                confidence=1.0, primary_entity="unknown", target_entities=[], signal_ids=[], evidence=[], metrics={},
+                mitre_techniques=[], merge_key="mock", event_ids=[], context_event_ids=[],
+                first_seen=datetime.datetime.now(datetime.timezone.utc), last_seen=datetime.datetime.now(datetime.timezone.utc)
+            ),
+            events=[], context_events=[]
         )
         
-    with patch('agent.triage.groq_provider.ChatGroq'):
-        # Actually patch _call inside _invoke_with_circuit_breaker
-        pass
+        result = runner.run({}, context)
         
-    from agent.triage.retry import with_retry
-    res, retries = with_retry(
-        mock_call, 
-        max_retries=3, 
-        base_delay=0.01,
-        max_delay=0.01
-    )
-    
-    assert calls == 2
-    assert retries == 1
-    assert res.submission.triage_verdict == TriageVerdict.FALSE_POSITIVE
+        assert calls[0] == 2
+        assert provider.circuit_breaker.failures == 0 # Reset after success
+        assert result.metrics.retry_count == 1
+        assert result.submission is not None
+        assert result.submission.triage_verdict == TriageVerdict.FALSE_POSITIVE
 
 def test_process_stable_content_hash():
     bundle = DetectionIncidentBundle(
