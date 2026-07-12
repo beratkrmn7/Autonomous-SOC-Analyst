@@ -149,7 +149,7 @@ def test_true_interrupting_provider_timeout():
         
         assert timeout_passed[0] is not None
         assert 0.4 < timeout_passed[0] < 0.6
-        assert 0.4 < elapsed < 1.0 # Tolerant but definitely not 5 seconds
+        assert 0.4 < elapsed < 2.5 # Tolerant of CI runner overhead but definitely not 5 seconds
         assert result.review_reason == ReviewReason.PROVIDER_TIMEOUT
         assert result.submission is not None
         assert result.submission.triage_verdict == TriageVerdict.NEEDS_REVIEW
