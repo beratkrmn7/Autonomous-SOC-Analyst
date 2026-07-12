@@ -1,6 +1,4 @@
-from agent.errors import BaseError
-
-class ApplicationError(BaseError):
+class ApplicationError(Exception):
     pass
 
 class IncidentNotFoundError(ApplicationError):
