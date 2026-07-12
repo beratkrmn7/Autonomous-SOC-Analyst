@@ -256,7 +256,7 @@ def test_process_stable_content_hash():
     context = TriageIncidentContext(incident=bundle, events=[_make_dummy_event("E01")])
     runner = TriageRunner(provider=MagicMock(), cache=InMemoryTriageCache())
     state = {}
-    with patch.object(runner.provider, 'invoke', return_value=MagicMock(submission=None)) as mock_invoke:
+    with patch.object(runner.provider, 'invoke', return_value=MagicMock(submission=None)):
         runner.run(state, context)
         key1 = state["cache_key"]
         
