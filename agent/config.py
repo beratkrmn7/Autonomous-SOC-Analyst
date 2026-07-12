@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     triage_prompt_version: str = "1.0.0"
     triage_schema_version: str = "1.0.0"
 
+    # Phase 5A: Persistence Settings
+    database_url: str = "sqlite:///soc_triage.db"
+    database_echo: bool = False
+    
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
 @lru_cache
