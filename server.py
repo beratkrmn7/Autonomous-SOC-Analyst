@@ -206,7 +206,7 @@ async def ingest_file(file: UploadFile = File(...)):
 
 
 @app.post("/detect/file")
-async def detect_file(file: UploadFile = File(...), uow: UnitOfWork = Depends(get_uow), pipeline_version: str = Header(default="1.0.0", alias="Pipeline-Version")):
+async def detect_file(file: UploadFile = File(...), uow: UnitOfWork = Depends(get_uow)):
     """
     Ingest a raw JSONL log file, parse it into Canonical Events, and return Detection Signals.
     """
@@ -215,9 +215,10 @@ async def detect_file(file: UploadFile = File(...), uow: UnitOfWork = Depends(ge
     temp_path = await secure_save_upload(file)
         
     try:
+        from agent.config import get_settings
         analysis_mode = "detect"
         file_sha256 = calculate_file_sha256(temp_path)
-        idempotency_key = f"{file_sha256}:{pipeline_version}:{analysis_mode}"
+        idempotency_key = f"{file_sha256}:{get_settings().pipeline_version}:{analysis_mode}"
         
         svc = AnalysisService(uow=uow)
         try:
@@ -227,7 +228,7 @@ async def detect_file(file: UploadFile = File(...), uow: UnitOfWork = Depends(ge
                 source_name="api_detect",
                 file_sha256=file_sha256,
                 idempotency_key=idempotency_key,
-                pipeline_version=pipeline_version,
+                pipeline_version=get_settings().pipeline_version,
                 analysis_mode=analysis_mode
             )
         except DuplicateAnalysisError:
@@ -290,14 +291,14 @@ async def detect_file(file: UploadFile = File(...), uow: UnitOfWork = Depends(ge
         if isinstance(e, HTTPException):
             raise e
         import logging
-        logging.error(f"Error in /detect/file: {e}", exc_info=True)
+        logging.error(f"Error in /detect/file: {type(e).__name__} - {str(e)}", exc_info=False)
         raise HTTPException(status_code=500, detail="internal_error")
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
 @app.post("/analyze/file")
-async def analyze_file(file: UploadFile = File(...), uow: UnitOfWork = Depends(get_uow), pipeline_version: str = Header(default="1.0.0", alias="Pipeline-Version")):
+async def analyze_file(file: UploadFile = File(...), uow: UnitOfWork = Depends(get_uow)):
     """
     Analyze a raw JSONL log file, performing full ingestion, filtering, correlation, and LLM triage.
     """
@@ -306,9 +307,10 @@ async def analyze_file(file: UploadFile = File(...), uow: UnitOfWork = Depends(g
     temp_path = await secure_save_upload(file)
         
     try:
+        from agent.config import get_settings
         analysis_mode = "analyze"
         file_sha256 = calculate_file_sha256(temp_path)
-        idempotency_key = f"{file_sha256}:{pipeline_version}:{analysis_mode}"
+        idempotency_key = f"{file_sha256}:{get_settings().pipeline_version}:{analysis_mode}"
         
         svc = AnalysisService(uow=uow)
         try:
@@ -318,7 +320,7 @@ async def analyze_file(file: UploadFile = File(...), uow: UnitOfWork = Depends(g
                 source_name="api_analyze",
                 file_sha256=file_sha256,
                 idempotency_key=idempotency_key,
-                pipeline_version=pipeline_version,
+                pipeline_version=get_settings().pipeline_version,
                 analysis_mode=analysis_mode
             )
         except DuplicateAnalysisError:
@@ -346,6 +348,12 @@ async def analyze_file(file: UploadFile = File(...), uow: UnitOfWork = Depends(g
             "incidents_generated": len(incident_summaries),
             "incidents": incident_summaries
         }
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        import logging
+        logging.error(f"Error in /analyze/file: {type(e).__name__} - {str(e)}", exc_info=False)
+        raise HTTPException(status_code=500, detail="internal_error")
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)

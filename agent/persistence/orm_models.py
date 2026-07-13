@@ -36,6 +36,12 @@ class IngestionJob(Base):
     analysis_mode = Column(String, nullable=True)
     status = Column(String, default="pending")
     error_code = Column(String, nullable=True)
+    
+    # Metrics
+    semantically_invalid_records = Column(Integer, default=0)
+    skipped_records = Column(Integer, default=0)
+    bytes_read = Column(Integer, default=0)
+    
     input_format = Column(String)
     reused_count = Column(Integer, default=0)
     last_requested_at = Column(DateTime(timezone=True), nullable=True)

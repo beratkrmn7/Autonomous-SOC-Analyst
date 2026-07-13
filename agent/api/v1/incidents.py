@@ -173,7 +173,7 @@ def get_report(incident_id: str, uow: UnitOfWork = Depends(get_uow)):
         validated_ev = []
         for run in incident.triage_runs:
             for ev in run.evidence_items:
-                if ev.validation_status == "valid":
+                if ev.validation_status == "validated":
                     validated_ev.append({
                         "evidence_id": ev.evidence_id,
                         "event_id": ev.event_id,

@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     llm_provider: Literal["groq"] = "groq"
     llm_model: str = "llama-3.3-70b-versatile"
     groq_api_key: Optional[SecretStr] = None
+    
+    pipeline_version: str = "1.0.0"
 
     llm_parser_fallback_enabled: bool = False
 

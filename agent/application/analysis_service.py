@@ -61,6 +61,9 @@ class AnalysisService:
                     job.parsed_records = result.ingestion_result.metrics.parsed_records
                     job.failed_records = result.ingestion_result.metrics.failed_records
                     job.unsupported_records = result.ingestion_result.metrics.unsupported_records
+                    job.semantically_invalid_records = getattr(result.ingestion_result.metrics, "semantically_invalid_records", 0)
+                    job.skipped_records = getattr(result.ingestion_result.metrics, "skipped_records", 0)
+                    job.bytes_read = getattr(result.ingestion_result.metrics, "bytes_read", 0)
                     job.duration_ms = result.ingestion_result.metrics.duration_ms
                     job.parser_counts = result.ingestion_result.metrics.parser_counts
                     job.error_counts = result.ingestion_result.metrics.error_counts
@@ -218,14 +221,14 @@ class AnalysisService:
                         # Hydrate Ingestion Result
                         from agent.ingestion.models import IngestionResult, IngestionMetrics, InputFormat
                         ingestion_metrics = IngestionMetrics(
-                            total_records=job.total_records,
-                            parsed_records=job.parsed_records,
-                            failed_records=job.failed_records,
-                            unsupported_records=job.unsupported_records,
-                            semantically_invalid_records=0,  # Or add to db if needed
-                            skipped_records=0,
-                            bytes_read=0,
-                            duration_ms=job.duration_ms,
+                            total_records=job.total_records or 0,
+                            parsed_records=job.parsed_records or 0,
+                            failed_records=job.failed_records or 0,
+                            unsupported_records=job.unsupported_records or 0,
+                            semantically_invalid_records=job.semantically_invalid_records or 0,
+                            skipped_records=job.skipped_records or 0,
+                            bytes_read=job.bytes_read or 0,
+                            duration_ms=job.duration_ms or 0,
                             parser_counts=job.parser_counts or {},
                             error_counts=job.error_counts or {}
                         )
@@ -294,9 +297,10 @@ class AnalysisService:
                                 if reports:
                                     state["final_report"] = reports[0].content
                                     state["report_content_sha256"] = reports[0].content_sha256
+                                    state["mitre_techniques"] = reports[0].mitre_techniques or []
+                                    state["recommendations"] = reports[0].recommended_actions or []
                                     if reports[0].entities:
-                                        state["mitre_techniques"] = reports[0].entities.get("mitre_tactics", [])
-                                        state["recommendations"] = reports[0].entities.get("recommendations", [])
+                                        pass # Could load other entities if needed
                                     
                                 # Hydrate Evidence
                                 run_evidence = [ev for ev in job.evidence_items if ev.triage_run_id == last_run.id]
@@ -314,7 +318,7 @@ class AnalysisService:
                                             "validation_status": ev.validation_status,
                                             "rejection_reason": ev.rejection_reason
                                         }
-                                        if ev.validation_status == "valid":
+                                        if ev.validation_status == "validated":
                                             state["validated_evidence"].append(ev_dict)
                                         elif ev.validation_status == "rejected":
                                             state["rejected_evidence"].append(ev_dict)
@@ -407,7 +411,7 @@ class AnalysisService:
                     final_state = app.invoke(initial_state)
                     result.incidents.append(final_state)  # type: ignore
                 except Exception as e:
-                    logger.error(f"Error during triage", exc_info=False, extra={"error": str(e), "incident_id": initial_state.get("incident_id")})
+                    logger.error(f"Error during triage", exc_info=False, extra={"error": type(e).__name__, "error_msg": str(e), "incident_id": initial_state.get("incident_id")})
                     result.incidents.append(initial_state)
             else:
                 result.incidents.append(initial_state)
@@ -418,6 +422,7 @@ class AnalysisService:
                 self._persist_analysis(result, run_triage)
             except Exception as e:
                 # If we fail during persistence, mark the job as failed
+                logger.error("Persistence failed", exc_info=False, extra={"error": type(e).__name__, "error_msg": str(e), "job_id": getattr(result, "job_id", None)})
                 if getattr(result, "job_id", None):
                     with cast(UnitOfWork, self.uow) as uow:
                         from agent.persistence.orm_models import IngestionJob
