@@ -22,6 +22,7 @@ from agent.graph import app as agent_app  # noqa: E402
 from agent.ingestion.pipeline import IngestionPipeline  # noqa: E402
 from agent.models import IncidentState  # noqa: E402
 from agent.api.v1.incidents import router as v1_incidents_router  # noqa: E402
+from agent.api.v1.jobs import router as v1_jobs_router  # noqa: E402
 from agent.api.deps import get_uow  # noqa: E402
 from agent.persistence.unit_of_work import UnitOfWork  # noqa: E402
 
@@ -32,6 +33,7 @@ app = FastAPI(
 )
 
 app.include_router(v1_incidents_router, prefix="/api/v1")
+app.include_router(v1_jobs_router, prefix="/api/v1")
 
 app.add_middleware(
     CORSMiddleware,
