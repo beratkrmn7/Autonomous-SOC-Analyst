@@ -1,6 +1,5 @@
 import pytest
 from fastapi.testclient import TestClient
-from agent.api.deps import session_factory
 
 from agent.persistence.orm_models import IngestionJob
 from agent.workers.analysis_worker import AnalysisWorker
