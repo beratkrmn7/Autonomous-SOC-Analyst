@@ -29,34 +29,35 @@ class BackgroundAnalysisService:
         reused = False
 
         with self.uow:
+            assert self.uow.session is not None
             # 1. Check idempotency if a key is provided
             if idempotency_key:
                 job = self.uow.session.query(IngestionJob).filter_by(idempotency_key=idempotency_key).first()
                 if job:
                     if job.status == "queued" or job.status == "processing":
-                        return job.id, True
+                        return str(job.id), True
                     elif job.status == "failed":
                         # Retry
-                        job.status = "queued"
-                        job.queued_at = func.now()
-                        job.reused_count += 1
-                        job.last_requested_at = func.now()
+                        job.status = "queued"  # type: ignore
+                        job.queued_at = func.now()  # type: ignore
+                        job.reused_count += 1  # type: ignore
+                        job.last_requested_at = func.now()  # type: ignore
                         self.uow.session.commit()
                         
                         # Note: If retrying a failed job that already has the file staged, 
                         # we might need to handle the file upload again or assume it was removed.
                         # The client is re-uploading, so we stage the new file over the old job_id.
-                        staged_path, file_sha256 = self.staging_store.stage_file(stream, job.id, original_filename)
-                        job.file_sha256 = file_sha256
-                        job.original_filename = original_filename
+                        staged_path, file_sha256 = self.staging_store.stage_file(stream, str(job.id), original_filename)
+                        job.file_sha256 = file_sha256  # type: ignore
+                        job.original_filename = original_filename  # type: ignore
                         self.uow.session.commit()
                         
-                        return job.id, True
+                        return str(job.id), True
                     elif job.status == "completed":
-                        job.reused_count += 1
-                        job.last_requested_at = func.now()
+                        job.reused_count += 1  # type: ignore
+                        job.last_requested_at = func.now()  # type: ignore
                         self.uow.session.commit()
-                        return job.id, True
+                        return str(job.id), True
 
             # 2. Stage the file (which gives us the SHA-256)
             staged_path, file_sha256 = self.staging_store.stage_file(stream, job_id, original_filename)
@@ -84,7 +85,7 @@ class BackgroundAnalysisService:
                     existing_job = self.uow.session.query(IngestionJob).filter_by(idempotency_key=idempotency_key).first()
                     if existing_job:
                         self.staging_store.remove_file(job_id) # Clean up the newly staged file
-                        return existing_job.id, True
+                        return str(existing_job.id), True
                 raise # Re-raise if it's not handled
 
         return job_id, reused

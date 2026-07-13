@@ -43,6 +43,7 @@ async def submit_file_job(
 @router.get("/analysis-jobs/{job_id}")
 async def get_job_status(job_id: str, uow: UnitOfWork = Depends(get_uow)):
     with uow:
+        assert uow.session is not None
         job = uow.session.query(IngestionJob).get(job_id)
         if not job:
             raise HTTPException(status_code=404, detail="Job not found")
@@ -59,6 +60,7 @@ async def get_job_status(job_id: str, uow: UnitOfWork = Depends(get_uow)):
 @router.get("/analysis-jobs/{job_id}/result")
 async def get_job_result(job_id: str, uow: UnitOfWork = Depends(get_uow)):
     with uow:
+        assert uow.session is not None
         job = uow.session.query(IngestionJob).get(job_id)
         if not job:
             raise HTTPException(status_code=404, detail="Job not found")
