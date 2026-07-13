@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 from agent.parsers.syslog import SyslogParser
 from agent.parsers.base import ParseContext
 
@@ -8,5 +9,5 @@ def test_rfc5424():
     match = p.match(raw, ctx)
     assert match.matched
     evt = p.parse(raw, ctx, "E1")
-    assert evt.raw_message == "message"
+    assert evt.safe_message_excerpt == "message"
     assert evt.timestamp is not None

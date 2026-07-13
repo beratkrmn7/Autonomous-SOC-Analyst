@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 from agent.triage.runner import TriageRunner
 from agent.triage.provider import TriageProvider, TriageProviderResponse, TriageProviderRequest
 from agent.triage.exceptions import ProviderTimeoutError

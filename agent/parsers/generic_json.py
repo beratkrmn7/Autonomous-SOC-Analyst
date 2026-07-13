@@ -86,7 +86,7 @@ class GenericJsonParser(BaseLogParser):
         timestamp = normalize_timestamp(str(ts_val)) if ts_val else None
         
         # Try to guess raw message
-        raw_msg = raw_record.get("raw_message", raw_record.get("message", raw_record.get("msg", "")))
+        raw_msg = raw_record.get("safe_message_excerpt", raw_record.get("message", raw_record.get("msg", "")))
         
         return CanonicalLogEvent(
             event_id=event_id,
@@ -97,8 +97,8 @@ class GenericJsonParser(BaseLogParser):
             src_port=int(sport_val) if sport_val else None,
             dst_port=int(dport_val) if dport_val else None,
             action=str(act_val) if act_val else None,
-            raw_message=str(raw_msg),
-            original_log=raw_record,
+            safe_message_excerpt=str(raw_msg),
+            
             parser_name=self.name,
             parser_version=self.version,
             parser_confidence=0.76,

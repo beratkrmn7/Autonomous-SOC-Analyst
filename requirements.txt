@@ -9,3 +9,5 @@ fastapi
 uvicorn
 python-multipart
 rich
+SQLAlchemy>=2.0.0
+alembic>=1.13.0

@@ -1,25 +1,37 @@
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Depends
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Dict, Optional
+from typing import List, Optional
 import uvicorn
 import os
 import tempfile
 import uuid
+import hashlib
 
-from agent.config import get_settings
-from agent.errors import InputTooLargeError, UnsupportedInputFormatError, InvalidEncodingError
-from agent.graph import app as agent_app
-from agent.ingestion.pipeline import IngestionPipeline
-from agent.filtering import EventFilter
-from agent.models import IncidentState
+def calculate_file_sha256(filepath: str) -> str:
+    sha256_hash = hashlib.sha256()
+    with open(filepath, "rb") as f:
+        for byte_block in iter(lambda: f.read(4096), b""):
+            sha256_hash.update(byte_block)
+    return sha256_hash.hexdigest()
+
+from agent.config import get_settings  # noqa: E402
+from agent.errors import InputTooLargeError, UnsupportedInputFormatError, InvalidEncodingError  # noqa: E402
+from agent.graph import app as agent_app  # noqa: E402
+from agent.ingestion.pipeline import IngestionPipeline  # noqa: E402
+from agent.models import IncidentState  # noqa: E402
+from agent.api.v1.incidents import router as v1_incidents_router  # noqa: E402
+from agent.api.deps import get_uow  # noqa: E402
+from agent.persistence.unit_of_work import UnitOfWork  # noqa: E402
 
 app = FastAPI(
     title="Agentic SOC Triage Assistant",
     description="Agentic SOC Triage workflow using LangGraph and Groq",
     version="1.0.0"
 )
+
+app.include_router(v1_incidents_router, prefix="/api/v1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -28,8 +40,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-incident_store: Dict[str, dict] = {}
-
+# RAM store removed to use persistent database backend
 @app.exception_handler(InputTooLargeError)
 async def input_too_large_handler(request: Request, exc: InputTooLargeError):
     return JSONResponse(
@@ -105,7 +116,7 @@ def readiness_check():
     return {"status": "ready"}
 
 @app.post("/analyze", response_model=AnalyzeResponse)
-def analyze_incident(req: AnalyzeRequest):
+def analyze_incident(req: AnalyzeRequest, uow: UnitOfWork = Depends(get_uow)):
     """
     Legacy mock endpoint: Ingest raw logs for an incident and run triage.
     """
@@ -161,7 +172,7 @@ def analyze_incident(req: AnalyzeRequest):
         "errors": []
     }
     final_state = agent_app.invoke(initial_state)
-    incident_store[req.incident_id] = final_state
+    # Note: legacy endpoint doesn't persist to DB by default unless UoW is used
     return AnalyzeResponse(
         incident_id=req.incident_id,
         triage_verdict=final_state.get('triage_verdict'),
@@ -195,199 +206,184 @@ async def ingest_file(file: UploadFile = File(...)):
 
 
 @app.post("/detect/file")
-async def detect_file(file: UploadFile = File(...)):
+async def detect_file(file: UploadFile = File(...), uow: UnitOfWork = Depends(get_uow)):
     """
-    Analyze a raw JSONL log file, performing full ingestion, filtering, and Phase 3 DetectionEngine logic.
-    Returns signals and incidents without invoking the LLM triage graph.
+    Ingest a raw JSONL log file, parse it into Canonical Events, and return Detection Signals.
     """
-    from agent.detection.engine import DetectionEngine
+    from agent.application.analysis_service import AnalysisService
+    from agent.application.errors import DuplicateAnalysisError
     temp_path = await secure_save_upload(file)
         
     try:
-        ingest = IngestionPipeline()
-        filter_engine = EventFilter()
-        detection_engine = DetectionEngine()
+        from agent.config import get_settings
+        analysis_mode = "detect"
+        file_sha256 = calculate_file_sha256(temp_path)
+        idempotency_key = f"{file_sha256}:{get_settings().pipeline_version}:{analysis_mode}"
         
-        ingest_result = ingest.ingest_file(temp_path)
-        filter_result = filter_engine.filter_events(ingest_result.events)
-        
-        det_result = detection_engine.analyze(filter_result.candidates, filter_result.context)
+        svc = AnalysisService(uow=uow)
+        try:
+            result = svc.analyze_file(
+                temp_path, 
+                run_triage=False, 
+                source_name="api_detect",
+                file_sha256=file_sha256,
+                idempotency_key=idempotency_key,
+                pipeline_version=get_settings().pipeline_version,
+                analysis_mode=analysis_mode
+            )
+        except DuplicateAnalysisError:
+            raise HTTPException(status_code=409, detail="Analysis already in progress for this file and mode.")
+        det_result = result.detection_result
+        ingest_result = result.ingestion_result
         
         # Sanitize output for public endpoint
         safe_incidents = []
-        for i in det_result.incidents:
-            safe_incidents.append({
-                "incident_id": i.incident_id,
-                "incident_type": i.incident_type,
-                "severity": i.severity,
-                "confidence": i.confidence,
-                "first_seen": i.first_seen.isoformat() if i.first_seen else None,
-                "last_seen": i.last_seen.isoformat() if i.last_seen else None,
-                "event_count": len(i.event_ids),
-                "signal_count": len(i.signal_ids),
-                "target_count": len(i.target_entities)
-            })
-            
+        if det_result:
+            for i in det_result.incidents:
+                safe_incidents.append({
+                    "incident_id": i.incident_id,
+                    "incident_type": i.incident_type,
+                    "severity": i.severity,
+                    "confidence": i.confidence,
+                    "first_seen": i.first_seen.isoformat() if i.first_seen else None,
+                    "last_seen": i.last_seen.isoformat() if i.last_seen else None,
+                    "event_count": len(i.event_ids),
+                    "signal_count": len(i.signal_ids),
+                    "target_count": len(i.target_entities)
+                })
+                
         safe_signals = []
-        for s in det_result.signals:
-            safe_signals.append({
-                "signal_id": s.signal_id,
-                "rule_name": s.rule_name,
-                "severity": s.severity,
-                "confidence": s.confidence,
-                "event_count": len(s.event_ids),
-                "target_count": len(s.target_entities)
-            })
-            
+        if det_result:
+            for s in det_result.signals:
+                safe_signals.append({
+                    "signal_id": s.signal_id,
+                    "rule_name": s.rule_name,
+                    "severity": s.severity,
+                    "confidence": s.confidence,
+                    "event_count": len(s.event_ids),
+                    "target_count": len(s.target_entities)
+                })
+                
         return {
+            "reused": getattr(result, "reused", False),
+            "job_id": getattr(result, "job_id", None),
             "ingestion": {
-                "total_records": ingest_result.metrics.total_records,
-                "parsed_records": ingest_result.metrics.parsed_records,
-                "failed_records": ingest_result.metrics.failed_records,
-                "unsupported_records": ingest_result.metrics.unsupported_records
+                "total_records": ingest_result.metrics.total_records if ingest_result else 0,
+                "parsed_records": ingest_result.metrics.parsed_records if ingest_result else 0,
+                "failed_records": ingest_result.metrics.failed_records if ingest_result else 0,
+                "unsupported_records": ingest_result.metrics.unsupported_records if ingest_result else 0
             },
             "detection": {
-                "eligible_events": det_result.metrics.eligible_events,
-                "skipped_events": det_result.metrics.skipped_events,
-                "duplicate_events": getattr(det_result.metrics, 'duplicate_event_count', 0),
-                "signal_count": det_result.metrics.signal_count,
-                "suppressed_signal_count": det_result.metrics.suppressed_signal_count,
-                "incident_count": det_result.metrics.incident_count,
-                "merge_count": getattr(det_result.metrics, 'merge_count', 0),
-                "duration_ms": det_result.metrics.duration_ms
+                "eligible_events": det_result.metrics.eligible_events if det_result else 0,
+                "skipped_events": det_result.metrics.skipped_events if det_result else 0,
+                "duplicate_events": getattr(det_result.metrics, 'duplicate_event_count', 0) if det_result else 0,
+                "signal_count": det_result.metrics.signal_count if det_result else 0,
+                "suppressed_signal_count": det_result.metrics.suppressed_signal_count if det_result else 0,
+                "incident_count": det_result.metrics.incident_count if det_result else 0,
+                "merge_count": getattr(det_result.metrics, 'merge_count', 0) if det_result else 0,
+                "duration_ms": det_result.metrics.duration_ms if det_result else 0
             },
             "incidents": safe_incidents,
             "signals_summary": safe_signals,
-            "warnings": det_result.warnings
+            "warnings": det_result.warnings if det_result else []
         }
     except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
         import logging
-        logging.error(f"Error in /detect/file: {e}", exc_info=True)
+        logging.error(f"Error in /detect/file: {type(e).__name__} - {str(e)}", exc_info=False)
         raise HTTPException(status_code=500, detail="internal_error")
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
 @app.post("/analyze/file")
-async def analyze_file(file: UploadFile = File(...)):
+async def analyze_file(file: UploadFile = File(...), uow: UnitOfWork = Depends(get_uow)):
     """
     Analyze a raw JSONL log file, performing full ingestion, filtering, correlation, and LLM triage.
     """
-    from agent.detection.engine import DetectionEngine
+    from agent.application.analysis_service import AnalysisService
+    from agent.application.errors import DuplicateAnalysisError
     temp_path = await secure_save_upload(file)
         
     try:
-        ingest = IngestionPipeline()
-        filter_engine = EventFilter()
-        detection_engine = DetectionEngine()
+        from agent.config import get_settings
+        analysis_mode = "analyze"
+        file_sha256 = calculate_file_sha256(temp_path)
+        idempotency_key = f"{file_sha256}:{get_settings().pipeline_version}:{analysis_mode}"
         
-        ingest_result = ingest.ingest_file(temp_path)
-        filter_result = filter_engine.filter_events(ingest_result.events)
-        
-        # Phase 3 Engine directly
-        det_result = detection_engine.analyze(filter_result.candidates, filter_result.context)
-        
-        # Build event map to resolve full CanonicalLogEvent dictionaries for Graph
-        event_map = {e.event_id: e.model_dump(mode="json") for e in ingest_result.events if e.event_id}
+        svc = AnalysisService(uow=uow)
+        try:
+            result = svc.analyze_file(
+                temp_path, 
+                run_triage=True, 
+                source_name="api_analyze",
+                file_sha256=file_sha256,
+                idempotency_key=idempotency_key,
+                pipeline_version=get_settings().pipeline_version,
+                analysis_mode=analysis_mode
+            )
+        except DuplicateAnalysisError:
+            raise HTTPException(status_code=409, detail="Analysis already in progress for this file and mode.")
         
         incident_summaries = []
-        for inc in det_result.incidents:
-            canonical_events = [event_map[eid] for eid in inc.event_ids if eid in event_map]
-            
-            detected_signals = []
-            candidate_evidence = []
-            
-            # Resolve the signals that formed this incident
-            sig_list = [s for s in det_result.signals if s.signal_id in inc.signal_ids]
-            
-            for sig in sig_list:
-                detected_signals.append({
-                    "signal_id": getattr(sig, "signal_id", ""),
-                    "rule_id": getattr(sig, "rule_id", ""),
-                    "rule_name": getattr(sig, "rule_name", ""),
-                    "signal_type": getattr(sig, "signal_type", ""),
-                    "signal_family": getattr(sig, "signal_family", ""),
-                    "severity": getattr(sig, "severity", "none"),
-                    "confidence_score": getattr(sig, "confidence", 0.0),
-                    "event_ids": getattr(sig, "event_ids", []),
-                    "target_entities": getattr(sig, "target_entities", []),
-                    "metrics": getattr(sig, "metrics", {}),
-                    "mitre_techniques": getattr(sig, "mitre_techniques", []),
-                    "description": getattr(sig, "rule_name", "")
-                })
-            
-            # Merge evidence from the new incident bundle
-            for ev in inc.evidence:
-                candidate_evidence.append({
-                    "event_id": ev.event_id,
-                    "quote": ev.quote,
-                    "reason": ev.reason,
-                    "source": ev.source,
-                    "original_fields": ev.original_fields,
-                    "correlation_context": ev.correlation_context
-                })
-            context_events = [event_map[eid] for eid in inc.context_event_ids if eid in event_map]
-            
-            from agent.triage.models import TriageIncidentContext
-            from agent.schema import CanonicalLogEvent
-            context = TriageIncidentContext(
-                incident=inc,
-                events=[CanonicalLogEvent(**e) for e in canonical_events],
-                context_events=[CanonicalLogEvent(**e) for e in context_events]
-            )
-
-            initial_state: IncidentState = {
-                "incident_id": inc.incident_id,
-                "incident": context.model_dump(mode="json"),
-                "canonical_events": canonical_events,
-                "messages": [],
-                "iteration_count": 0,
-                "mitre_techniques": [],
-                "candidate_evidence": candidate_evidence,
-                "detected_signals": detected_signals,
-                "search_history": [],
-                "tool_results": [],
-                "errors": []
-            }
-            
-            final_state = agent_app.invoke(initial_state)
-            incident_store[inc.incident_id] = final_state
+        for inc_state in result.incidents:
+            incident_id = inc_state.get('incident_id')
             
             incident_summaries.append({
-                "incident_id": inc.incident_id,
-                "triage_verdict": final_state.get('triage_verdict'),
-                "incident_type": final_state.get('incident_type'),
-                "severity": final_state.get('severity'),
-                "confidence_score": final_state.get('confidence_score'),
-                "mitre_techniques": final_state.get('mitre_techniques', []),
-                "report_status": "Generated" if final_state.get('final_report') else "Not Generated"
+                "incident_id": incident_id,
+                "triage_verdict": inc_state.get('triage_verdict'),
+                "incident_type": inc_state.get('incident_type'),
+                "severity": inc_state.get('severity'),
+                "confidence_score": inc_state.get('confidence_score'),
+                "mitre_techniques": inc_state.get('mitre_techniques', []),
+                "report_status": "Generated" if inc_state.get('final_report') else "Not Generated"
             })
             
         return {
-            "ingestion_metrics": ingest_result.metrics.model_dump(),
-            "filtered_events": len(filter_result.candidates),
+            "reused": getattr(result, "reused", False),
+            "job_id": getattr(result, "job_id", None),
+            "ingestion_metrics": result.ingestion_result.metrics.model_dump() if result.ingestion_result else {},
+            "filtered_events": len(result.event_map),
             "incidents_generated": len(incident_summaries),
             "incidents": incident_summaries
         }
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        import logging
+        logging.error(f"Error in /analyze/file: {type(e).__name__} - {str(e)}", exc_info=False)
+        raise HTTPException(status_code=500, detail="internal_error")
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
 @app.get("/incident/{incident_id}/report")
 def get_incident_report(incident_id: str):
-    if incident_id not in incident_store:
-        raise HTTPException(status_code=404, detail="Incident not found or not processed yet.")
-    state = incident_store[incident_id]
-    return {
-        "incident_id": incident_id,
-        "triage_verdict": state.get("triage_verdict"),
-        "incident_type": state.get("incident_type"),
-        "entities": state.get("entities", {}),
-        "validated_evidence": state.get("validated_evidence", []),
-        "recommended_actions": state.get("recommended_actions", []),
-        "mitre_techniques": state.get("mitre_techniques", []),
-        "final_report_markdown": state.get("final_report", "No report available.")
-    }
+    from agent.persistence.unit_of_work import UnitOfWork
+    
+    uow = UnitOfWork()
+    with uow:
+        incident = uow.incidents.get(incident_id)
+        if not incident:
+            raise HTTPException(status_code=404, detail="Incident not found.")
+            
+        if not incident.reports:
+            raise HTTPException(status_code=404, detail="Report not generated yet.")
+            
+        report = incident.reports[-1]
+        
+        # Legacy format expected by the frontend
+        return {
+            "incident_id": incident_id,
+            "triage_verdict": incident.triage_runs[-1].verdict if incident.triage_runs else None,
+            "incident_type": incident.incident_type,
+            "entities": report.entities,
+            "validated_evidence": [], # Would need to reconstruct from DB if needed
+            "recommended_actions": report.recommended_actions,
+            "mitre_techniques": report.mitre_techniques,
+            "final_report_markdown": report.content
+        }
 
 if __name__ == "__main__":
     print("Starting Agentic SOC API Server on http://localhost:8000")

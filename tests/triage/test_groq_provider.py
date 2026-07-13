@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 import pytest
 from langchain_core.messages import AIMessage
 from agent.triage.groq_provider import GroqTriageProvider

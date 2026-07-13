@@ -31,7 +31,7 @@ def create_evidence_from_event(
     if event.action_reason:
         original_fields["action_reason"] = event.action_reason
 
-    quote = str(event.raw_message) if event.raw_message else ""
+    quote = str(event.safe_message_excerpt) if event.safe_message_excerpt else ""
 
     return DetectionEvidence(
         event_id=event.event_id,

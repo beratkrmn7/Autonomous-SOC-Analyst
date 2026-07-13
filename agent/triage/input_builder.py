@@ -32,7 +32,7 @@ def _build_safe_event(event: CanonicalLogEvent, max_preview_chars: int = 1000) -
         tcp_flags=event.tcp_flags,
         parser_name=event.parser_name or "unknown",
         source_name=event.source_name or "unknown",
-        sanitized_message_excerpt=truncate_str(event.raw_message, max_preview_chars) if event.raw_message else None
+        sanitized_message_excerpt=truncate_str(event.safe_message_excerpt, max_preview_chars) if event.safe_message_excerpt else None
     )
 
 def build_triage_input(
@@ -73,7 +73,7 @@ def build_triage_input(
             reason=reason,
             source=source,
             canonical_fields=ev.get('original_fields', {}),
-            vendor_original_fields=ev.get('original_log', {}),
+            vendor_original_fields=ev.get('source_line', {}),
             correlation_context=ev.get('correlation_context', {})
         ))
         

@@ -1,5 +1,6 @@
 
-from typing import List, Optional, Literal, TypedDict, Annotated, Dict, Any, NotRequired
+from typing import List, Optional, Literal, Annotated, Dict, Any
+from typing_extensions import TypedDict, NotRequired
 from pydantic import BaseModel, Field
 from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
@@ -14,7 +15,7 @@ class EvidenceItem(BaseModel):
     quote: str = Field(description="The exact quote or summary from the log.")
     reason: str = Field(description="Reason why this evidence supports the verdict.")
     source: str = Field(description="The source of the evidence, usually 'raw_logs' or the name of a tool.")
-    original_fields: Dict[str, Any] = Field(default_factory=dict, description="Fields from original_log for validation.")
+    original_fields: Dict[str, Any] = Field(default_factory=dict, description="Fields from source_line for validation.")
     correlation_context: Dict[str, Any] = Field(default_factory=dict, description="Metrics context.")
 
 class ParseFailure(BaseModel):
@@ -81,7 +82,7 @@ class TriageResult(BaseModel):
         description="Detailed structured evidence supporting the verdict."
     )
 
-class IncidentState(TypedDict):
+class IncidentState(TypedDict, total=False):
     """
     The shared state for the LangGraph state machine.
     """
@@ -105,6 +106,8 @@ class IncidentState(TypedDict):
     # Phase 4 Submission state
     triage_submission: NotRequired[dict]
     triage_verdict: NotRequired[str]
+    report_content_sha256: NotRequired[str]
+    recommendations: NotRequired[list]
     incident_type: NotRequired[str]
     severity: NotRequired[str]
     confidence_score: NotRequired[float]

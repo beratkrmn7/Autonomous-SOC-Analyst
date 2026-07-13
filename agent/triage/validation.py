@@ -63,10 +63,10 @@ def validate_evidence(
             
         trusted_event = trusted_event_map[candidate.event_id]
         
-        # Validate quote against canonical raw_message
+        # Validate quote against canonical safe_message_excerpt
         if candidate.quote:
             norm_quote = normalize_text(candidate.quote)
-            norm_raw = normalize_text(trusted_event.raw_message or "")
+            norm_raw = normalize_text(trusted_event.safe_message_excerpt or "")
             if norm_quote not in norm_raw:
                 results.append(EvidenceValidationResult(
                     evidence_id=ev_id,
@@ -104,13 +104,13 @@ def validate_evidence(
         if candidate.vendor_original_fields:
             mismatch = False
             missing = False
-            original_log = trusted_event.original_log or {}
+            metadata = trusted_event.parser_metadata or {}
             
             for k, v in candidate.vendor_original_fields.items():
-                if k not in original_log:
+                if k not in metadata:
                     missing = True
                     break
-                if str(original_log[k]) != str(v):
+                if str(metadata[k]) != str(v):
                     mismatch = True
                     break
                     

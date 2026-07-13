@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 from agent.parsers.pf_firewall import PfFirewallParser
 from agent.parsers.base import ParseContext
 

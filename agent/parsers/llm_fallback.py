@@ -17,7 +17,7 @@ class MappingConfig(BaseModel):
     dst_port_key: str = Field(default="", description="JSON key for destination port")
     event_type_key: str = Field(default="", description="JSON key for event type")
     action_key: str = Field(default="", description="JSON key for action taken")
-    raw_message_key: str = Field(default="", description="JSON key for raw message, if any")
+    safe_message_excerpt_key: str = Field(default="", description="JSON key for raw message, if any")
 
 class LLMParserAssistant:
     def __init__(self):
@@ -93,11 +93,11 @@ Do NOT invent keys, only use exactly what is in the JSON.
         src_port = get_val(mapping.src_port_key)
         dst_port = get_val(mapping.dst_port_key)
         event_type = get_val(mapping.event_type_key)
-        raw_message = get_val(mapping.raw_message_key)
+        safe_message_excerpt = get_val(mapping.safe_message_excerpt_key)
         
-        if not raw_message:
+        if not safe_message_excerpt:
             # Fallback construct
-            raw_message = json.dumps(raw_log)
+            safe_message_excerpt = json.dumps(raw_log)
             
         return CanonicalLogEvent(
             timestamp=None,
@@ -106,8 +106,8 @@ Do NOT invent keys, only use exactly what is in the JSON.
             src_port=int(src_port) if src_port is not None else None,
             dst_port=int(dst_port) if dst_port is not None else None,
             event_type=str(event_type) if event_type else None,
-            raw_message=str(raw_message),
-            original_log=raw_log,
+            safe_message_excerpt=str(safe_message_excerpt),
+            source_line=None,
             event_id=raw_log.get("event_id") or "UNKNOWN",
             parser_name="llm_fallback",
             parse_status="success"

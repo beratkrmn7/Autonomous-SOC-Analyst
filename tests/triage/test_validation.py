@@ -51,7 +51,7 @@ def test_validate_evidence_success():
     from agent.detection.models import IncidentBundle
     from agent.triage.models import TriageIncidentContext
     from datetime import datetime, timezone
-    trusted_events = [CanonicalLogEvent(event_id="EVT-1", timestamp=None, observed_at=datetime.now(timezone.utc), parse_status="success", parser_name="test_parser", source_name="test_source", raw_message="An error occurred here", original_log={"src_ip": "1.2.3.4"})]
+    trusted_events = [CanonicalLogEvent(event_id="EVT-1", timestamp=None, observed_at=datetime.now(timezone.utc), parse_status="success", parser_name="test_parser", source_name="test_source", safe_message_excerpt="An error occurred here", parser_metadata={"src_ip": "1.2.3.4"})]
     bundle = IncidentBundle(incident_id="INC-1", incident_type="test", incident_family="test", title="test", severity="low", confidence=1.0, primary_entity="ip", target_entities=[], signal_ids=[], evidence=[], metrics={}, mitre_techniques=[], merge_key="mock", event_ids=[], context_event_ids=[], first_seen=datetime.now(timezone.utc), last_seen=datetime.now(timezone.utc))
     context = TriageIncidentContext(incident=bundle, events=trusted_events)
     results = validate_evidence(submission, triage_input, context)
@@ -106,7 +106,7 @@ def test_validate_evidence_quote_mismatch():
     from agent.detection.models import IncidentBundle
     from agent.triage.models import TriageIncidentContext
     from datetime import datetime, timezone
-    trusted_events = [CanonicalLogEvent(event_id="EVT-1", timestamp=None, observed_at=datetime.now(timezone.utc), parse_status="success", parser_name="test_parser", source_name="test_source", raw_message="An error occurred here", original_log={"src_ip": "1.2.3.4"})]
+    trusted_events = [CanonicalLogEvent(event_id="EVT-1", timestamp=None, observed_at=datetime.now(timezone.utc), parse_status="success", parser_name="test_parser", source_name="test_source", safe_message_excerpt="An error occurred here")]
     bundle = IncidentBundle(incident_id="INC-1", incident_type="test", incident_family="test", title="test", severity="low", confidence=1.0, primary_entity="ip", target_entities=[], signal_ids=[], evidence=[], metrics={}, mitre_techniques=[], merge_key="mock", event_ids=[], context_event_ids=[], first_seen=datetime.now(timezone.utc), last_seen=datetime.now(timezone.utc))
     context = TriageIncidentContext(incident=bundle, events=trusted_events)
     results = validate_evidence(submission, triage_input, context)
@@ -162,7 +162,7 @@ def test_validate_evidence_fields_mismatch():
     from agent.detection.models import IncidentBundle
     from agent.triage.models import TriageIncidentContext
     from datetime import datetime, timezone
-    trusted_events = [CanonicalLogEvent(event_id="EVT-1", timestamp=None, observed_at=datetime.now(timezone.utc), parse_status="success", parser_name="test_parser", source_name="test_source", raw_message="An error occurred here", original_log={"src_ip": "1.2.3.4"})]
+    trusted_events = [CanonicalLogEvent(event_id="EVT-1", timestamp=None, observed_at=datetime.now(timezone.utc), parse_status="success", parser_name="test_parser", source_name="test_source", safe_message_excerpt="An error occurred here")]
     bundle = IncidentBundle(incident_id="INC-1", incident_type="test", incident_family="test", title="test", severity="low", confidence=1.0, primary_entity="ip", target_entities=[], signal_ids=[], evidence=[], metrics={}, mitre_techniques=[], merge_key="mock", event_ids=[], context_event_ids=[], first_seen=datetime.now(timezone.utc), last_seen=datetime.now(timezone.utc))
     context = TriageIncidentContext(incident=bundle, events=trusted_events)
     results = validate_evidence(submission, triage_input, context)
@@ -207,7 +207,7 @@ def test_provenance_multiple_evidence_same_event():
     from agent.triage.models import TriageIncidentContext
     from datetime import datetime, timezone
     
-    trusted_events = [CanonicalLogEvent(event_id="EVT-1", timestamp=None, observed_at=datetime.now(timezone.utc), parse_status="success", parser_name="test_parser", source_name="test_source", raw_message="An error occurred here", original_log={})]
+    trusted_events = [CanonicalLogEvent(event_id="EVT-1", timestamp=None, observed_at=datetime.now(timezone.utc), parse_status="success", parser_name="test_parser", source_name="test_source", safe_message_excerpt="An error occurred here")]
     
     # 2 pieces of evidence for the same event
     ev1 = DetectionEvidence(event_id="EVT-1", quote="error", reason="test", source="rule_1", original_fields={}, correlation_context={})
@@ -240,7 +240,7 @@ def test_correlation_context_allowlist():
     from agent.triage.models import TriageIncidentContext
     from datetime import datetime, timezone
     
-    trusted_events = [CanonicalLogEvent(event_id="EVT-1", timestamp=None, observed_at=datetime.now(timezone.utc), parse_status="success", parser_name="test_parser", source_name="test_source", raw_message="An error occurred here", original_log={})]
+    trusted_events = [CanonicalLogEvent(event_id="EVT-1", timestamp=None, observed_at=datetime.now(timezone.utc), parse_status="success", parser_name="test_parser", source_name="test_source", safe_message_excerpt="An error occurred here")]
     bundle = IncidentBundle(incident_id="INC-1", incident_type="test", incident_family="test", title="test", severity="low", confidence=1.0, primary_entity="1.1.1.1", target_entities=["2.2.2.2"], signal_ids=[], evidence=[], metrics={}, mitre_techniques=[], merge_key="mock", event_ids=[], context_event_ids=[], first_seen=datetime.now(timezone.utc), last_seen=datetime.now(timezone.utc))
     context = TriageIncidentContext(incident=bundle, events=trusted_events)
     

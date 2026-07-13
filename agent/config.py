@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     llm_provider: Literal["groq"] = "groq"
     llm_model: str = "llama-3.3-70b-versatile"
     groq_api_key: Optional[SecretStr] = None
+    
+    pipeline_version: str = "1.0.0"
 
     llm_parser_fallback_enabled: bool = False
 
@@ -37,6 +39,31 @@ class Settings(BaseSettings):
     triage_cache_ttl_seconds: int = Field(default=3600, ge=0)
     triage_prompt_version: str = "1.0.0"
     triage_schema_version: str = "1.0.0"
+
+    # Phase 5A: Persistence Settings
+    database_url: str = "sqlite:///soc_triage.db"
+    database_echo: bool = False
+    database_pool_size: int = Field(default=5, ge=1)
+    database_max_overflow: int = Field(default=10, ge=0)
+    database_pool_timeout: int = Field(default=30, ge=1)
+    
+    @property
+    def safe_database_url(self) -> str:
+        """Returns the database URL with the password redacted for safe logging."""
+        if not self.database_url:
+            return ""
+        if "@" in self.database_url:
+            try:
+                # e.g., postgresql://user:pass@host/db
+                scheme_user, rest = self.database_url.split(":", 1)
+                if "//" in scheme_user: # Handle format scheme://user:pass
+                    scheme, user = scheme_user.split("//", 1)
+                    if "@" in rest:
+                        password, host_db = rest.split("@", 1)
+                        return f"{scheme}//{user}:***@{host_db}"
+            except Exception:
+                return "***redacted***"
+        return self.database_url
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

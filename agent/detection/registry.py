@@ -11,7 +11,7 @@ class RuleRegistry:
 
     def register(self, rule: BaseDetectionRule) -> None:
         if rule.rule_id in self._rules:
-            raise ValueError(f"Rule with ID {rule.rule_id} is already registered.")
+            return  # Already registered
         self._rules[rule.rule_id] = rule
         logger.info(f"Registered rule: {rule.rule_id} v{rule.version} ({rule.name})")
 

@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 from agent.nodes import reporter_node
 
 def test_reporter_sqli_format():

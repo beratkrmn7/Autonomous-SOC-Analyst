@@ -76,13 +76,20 @@ The final output is a concise SOC triage report focused on four questions:
 - Robust deduplication and alert suppression
 - Safe event context mapping
 
-### 4. Secure Agentic Triage (Phase 4) - **IN PROGRESS**
+### 4. Secure Agentic Triage (Phase 4) - **COMPLETED**
 - Abstracted Triage Provider interface for LLMs
 - Circuit Breaker pattern to handle repeated provider failures
 - Idempotent execution with max iteration limits
 - Strong bounds on LLM tool usage (`SearchLogsTool`)
 - Rigorous evidence and claim validation
 - Deterministic markdown generation reporting
+
+### 5. Persistent Backend Foundation (Phase 5A) - **COMPLETED**
+- SQLAlchemy ORM database layer with SQLite support
+- Alembic database migrations
+- Repository and UnitOfWork patterns for transaction management
+- Incident lifecycle state machine and audit trails
+- Versioned `/api/v1/incidents` REST endpoints
 
 ## Why This Is Not Just an LLM Chatbot
 

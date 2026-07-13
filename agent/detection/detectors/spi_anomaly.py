@@ -32,10 +32,10 @@ class SPIAnomalyRule(BaseDetectionRule):
                 is_spi = True
             elif e.action and "spi" in str(e.action).lower():
                 is_spi = True
-            # Check metadata or fallback to raw_message checking
+            # Check metadata or fallback to safe_message_excerpt checking
             elif e.parser_metadata and e.parser_metadata.get("spi_anomaly", False):
                 is_spi = True
-            elif settings.SPI_ANOMALY_FALLBACK_RAW_MATCH and e.raw_message and "blocked by spi" in str(e.raw_message).lower():
+            elif settings.SPI_ANOMALY_FALLBACK_RAW_MATCH and e.safe_message_excerpt and "blocked by spi" in str(e.safe_message_excerpt).lower():
                 is_spi = True
                 
             if is_spi:
