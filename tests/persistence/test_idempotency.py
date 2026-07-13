@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from fastapi.testclient import TestClient
 from server import app
 from agent.persistence.unit_of_work import UnitOfWork
-from agent.persistence.orm_models import Base, IngestionJob, Incident
+from agent.persistence.orm_models import Base, IngestionJob
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from unittest.mock import patch
@@ -26,7 +26,7 @@ def temp_db():
         uow = UnitOfWork(session_factory=TestingSessionLocal)
         yield uow
         
-    app.dependency_overrides[from_api_deps := __import__('agent.api.deps', fromlist=['get_uow']).get_uow] = override_get_uow
+    app.dependency_overrides[__import__('agent.api.deps', fromlist=['get_uow']).get_uow] = override_get_uow
     
     yield path, TestingSessionLocal
     
@@ -188,8 +188,6 @@ def test_idempotency_parallel_submission(api_client, temp_db):
     log_content = '{"event_id": "1", "timestamp": "2023-10-10T10:00:00Z", "suspicious": true}\\n'
     path = create_temp_log(log_content)
     
-    import threading
-    from concurrent.futures import ThreadPoolExecutor
     barrier = threading.Barrier(5)
     
     def parallel_worker():
@@ -230,6 +228,9 @@ def test_idempotency_parallel_submission(api_client, temp_db):
             assert uow.session.query(CanonicalEvent).count() <= 1
             assert uow.session.query(DetectionSignal).count() <= 1
             assert uow.session.query(Incident).count() <= 1
+            assert uow.session.query(TriageRun).count() <= 1
+            assert uow.session.query(EvidenceItem).count() <= 1
+            assert uow.session.query(Report).count() <= 1
     finally:
         import os
         os.remove(path)

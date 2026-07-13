@@ -8,9 +8,8 @@ from agent.filtering import EventFilter
 from agent.detection.engine import DetectionEngine
 from agent.models import IncidentState
 from agent.graph import app
-import traceback
-logger = logging.getLogger(__name__)
 from sqlalchemy.sql import func
+logger = logging.getLogger(__name__)
 
 class AnalysisService:
     def __init__(self, uow: Optional[Any] = None):
@@ -411,7 +410,7 @@ class AnalysisService:
                     final_state = app.invoke(initial_state)
                     result.incidents.append(final_state)  # type: ignore
                 except Exception as e:
-                    logger.error(f"Error during triage", exc_info=False, extra={"error": type(e).__name__, "error_msg": str(e), "incident_id": initial_state.get("incident_id")})
+                    logger.error("Error during triage", exc_info=False, extra={"error": type(e).__name__, "error_msg": str(e), "incident_id": initial_state.get("incident_id")})
                     result.incidents.append(initial_state)
             else:
                 result.incidents.append(initial_state)

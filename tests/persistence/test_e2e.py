@@ -101,7 +101,7 @@ def test_api_to_db_flow_and_durability(isolated_db):
         # Test invalid transition -> 409
         # Assuming current version is 2 because triage was run, fetch to be sure
         res_get = client.get(f"/api/v1/incidents/{incident_id}")
-        current_version = res_get.json().get("version", 2)  # Wait, IncidentResponse doesn't have version yet, let's just use 2
+        res_get.json().get("version", 2)  # Wait, IncidentResponse doesn't have version yet, let's just use 2
         
         # Actually IncidentResponse doesn't return version. We know it's 2 after triage.
         res = client.patch(f"/api/v1/incidents/{incident_id}/status", json={"status": "invalid_status", "expected_version": 2})
