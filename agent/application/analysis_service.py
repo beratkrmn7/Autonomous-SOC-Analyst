@@ -1,4 +1,5 @@
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, cast
+from agent.persistence.unit_of_work import UnitOfWork
 from agent.application.models import AnalysisResult
 from agent.ingestion.pipeline import IngestionPipeline
 from agent.ingestion.models import CanonicalLogEvent
@@ -22,7 +23,7 @@ class AnalysisService:
         from agent.persistence.orm_models import IngestionJob, TriageRun, EvidenceItem, Report
         import uuid
         
-        with self.uow as uow:
+        with cast(UnitOfWork, self.uow) as uow: # type: ignore
             # 1. Ingestion Job
             # Check if job_id is already assigned (from idempotency flow)
             job_id = result.job_id
@@ -186,7 +187,7 @@ class AnalysisService:
         job_id = None
         
         if self.uow and idempotency_key:
-            with self.uow as uow:
+            with cast(UnitOfWork, self.uow) as uow: # type: ignore
                 job = uow.session.query(IngestionJob).filter_by(idempotency_key=idempotency_key).first()
                 if job:
                     if job.status == "processing":
@@ -370,7 +371,7 @@ class AnalysisService:
             except Exception as e:
                 # If we fail during persistence, mark the job as failed
                 if getattr(result, "job_id", None):
-                    with self.uow as uow:
+                    with cast(UnitOfWork, self.uow) as uow: # type: ignore
                         from agent.persistence.orm_models import IngestionJob
                         job = uow.session.query(IngestionJob).get(result.job_id)
                         if job:

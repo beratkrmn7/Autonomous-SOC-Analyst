@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 import pytest
 import tempfile
 import os
@@ -59,7 +60,7 @@ def test_idempotency_exact_duplicate():
                     events=[],
                     metrics=IngestionMetrics(total_records=1, parsed_records=1, failed_records=0, unsupported_records=0, duration_ms=10)
                 ),
-                detection_result=DetectionResult(signals=[], incidents=[], suppressed_signals=[], uncorrelated_event_ids=[], metrics=DetectionMetrics(signal_count=0, duration_ms=0)),
+                detection_result=DetectionResult(signals=[], incidents=[], suppressed_signals=[], uncorrelated_event_ids=[], metrics=DetectionMetrics(signal_count=0, duration_ms=0), warnings=[]),
                 event_map={},
                 signal_map={},
                 incidents=[]

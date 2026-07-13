@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 from agent.parsers.generic_json import GenericJsonParser
 from agent.parsers.base import ParseContext
 

@@ -81,7 +81,7 @@ class TriageResult(BaseModel):
         description="Detailed structured evidence supporting the verdict."
     )
 
-class IncidentState(TypedDict):
+class IncidentState(TypedDict, total=False):
     """
     The shared state for the LangGraph state machine.
     """

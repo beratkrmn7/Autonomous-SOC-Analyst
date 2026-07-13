@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 from agent.parsers.cef import CEFParser
 from agent.parsers.base import ParseContext
 

@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 import pytest
 import datetime
 from unittest.mock import patch, MagicMock

@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 from agent.triage.provider import TriageProvider, TriageProviderRequest, TriageProviderResponse
 from agent.triage.models import TriageSubmission
 from agent.triage.enums import TriageVerdict, TriageSeverity

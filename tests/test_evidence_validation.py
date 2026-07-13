@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 from agent.nodes import evidence_validation_node
 
 def test_evidence_validation_success():

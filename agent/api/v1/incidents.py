@@ -30,6 +30,7 @@ def list_incidents(
     uow: UnitOfWork = Depends(get_uow)
 ):
     with uow:
+        assert uow.session is not None
         query = uow.session.query(uow.incidents.model_cls)
         if status:
             query = query.filter(uow.incidents.model_cls.status == status)
@@ -83,7 +84,7 @@ def update_status(incident_id: str, req: StatusUpdateRequest, uow: UnitOfWork = 
             raise HTTPException(status_code=409, detail=f"Version conflict: expected {req.expected_version}, got {incident.version}")
             
         try:
-            IncidentLifecycle.transition(incident, req.status, actor="api_user", details=req.details)
+            IncidentLifecycle.transition(incident, req.status, actor="api_user", details=req.details or {})
             incident.version += 1
             uow.commit()
         except InvalidTransitionError as e:

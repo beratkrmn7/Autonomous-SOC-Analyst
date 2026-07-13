@@ -107,7 +107,7 @@ Do NOT invent keys, only use exactly what is in the JSON.
             dst_port=int(dst_port) if dst_port is not None else None,
             event_type=str(event_type) if event_type else None,
             safe_message_excerpt=str(safe_message_excerpt),
-            source_line=raw_log,
+            source_line=None,
             event_id=raw_log.get("event_id") or "UNKNOWN",
             parser_name="llm_fallback",
             parse_status="success"

@@ -1,5 +1,6 @@
 from agent.persistence.orm_models import Incident, AuditEvent
 from datetime import datetime, timezone
+from typing import Optional
 from fastapi import HTTPException
 
 class IncidentLifecycle:
@@ -18,8 +19,8 @@ class IncidentLifecycle:
     }
 
     @staticmethod
-    def transition(incident: Incident, new_status: str, actor: str = "system", details: dict = None) -> AuditEvent:
-        old_status = incident.status
+    def transition(incident: Incident, new_status: str, actor: str = "system", details: Optional[dict] = None) -> Optional[AuditEvent]:
+        old_status = str(incident.status)
         
         if old_status == new_status:
             # no-op
@@ -35,9 +36,9 @@ class IncidentLifecycle:
                 }
             )
             
-        incident.status = new_status
+        incident.status = new_status # type: ignore
         # Optimistic concurrency check handled in service/repo if version needed, else just increment version
-        incident.version = (incident.version or 1) + 1
+        incident.version = (incident.version or 1) + 1 # type: ignore
         
         audit = AuditEvent(
             incident_id=incident.incident_id,

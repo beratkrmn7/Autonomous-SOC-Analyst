@@ -65,7 +65,7 @@ class CanonicalEvent(Base):
     __tablename__ = "canonical_events"
     
     event_id = Column(String, primary_key=True)
-    job_id = Column(String, nullable=True, index=True) # Will be dropped in migration backfill
+    
     jobs = relationship("IngestionJob", secondary=ingestion_job_events, back_populates="events")
     source_name = Column(String, index=True)
     parser_name = Column(String)
@@ -90,7 +90,7 @@ class DetectionSignal(Base):
     __tablename__ = "detection_signals"
     
     signal_id = Column(String, primary_key=True)
-    job_id = Column(String, nullable=True, index=True) # Will be dropped in migration backfill
+    
     jobs = relationship("IngestionJob", secondary=ingestion_job_signals, back_populates="signals")
     rule_id = Column(String, index=True)
     rule_name = Column(String)
@@ -118,7 +118,7 @@ class Incident(Base):
     __tablename__ = "incidents"
     
     incident_id = Column(String, primary_key=True)
-    job_id = Column(String, nullable=True, index=True) # Will be dropped in migration backfill
+    
     jobs = relationship("IngestionJob", secondary=ingestion_job_incidents, back_populates="incidents")
     title = Column(String)
     incident_type = Column(String)

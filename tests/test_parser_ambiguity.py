@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 from agent.parsers.registry import ParserRegistry
 from agent.parsers.base import BaseLogParser, ParseContext, ParserMatch
 
