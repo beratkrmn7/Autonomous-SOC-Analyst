@@ -187,8 +187,8 @@ class AnalysisService:
                             
             # 8. Commit (happens on context exit)
 
-    def analyze_file(self, file_path: str, *, run_triage: bool = True, source_name: Optional[str] = None, file_sha256: Optional[str] = None, idempotency_key: Optional[str] = None, pipeline_version: Optional[str] = None, analysis_mode: Optional[str] = None) -> AnalysisResult:
-        # 1. Check Idempotency if key is provided
+    def analyze_file(self, file_path: str, *, run_triage: bool = True, source_name: Optional[str] = None, file_sha256: Optional[str] = None, idempotency_key: Optional[str] = None, pipeline_version: Optional[str] = None, analysis_mode: Optional[str] = None, job_id: Optional[str] = None) -> AnalysisResult:
+        # 1. Check Idempotency if key is provided and job_id is NOT provided
         from agent.persistence.orm_models import IngestionJob
         import uuid
         from sqlalchemy.exc import IntegrityError
@@ -196,9 +196,7 @@ class AnalysisService:
         from sqlalchemy.sql import func
         from agent.persistence.mappers import DataMapper
         
-        job_id = None
-        
-        if self.uow and idempotency_key:
+        if self.uow and idempotency_key and not job_id:
             with cast(UnitOfWork, self.uow) as uow:
                 job = uow.session.query(IngestionJob).filter_by(idempotency_key=idempotency_key).first()
                 if job:

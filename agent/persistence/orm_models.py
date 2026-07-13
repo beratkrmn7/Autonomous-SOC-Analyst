@@ -48,8 +48,13 @@ class IngestionJob(Base):
     
     created_at = Column(DateTime(timezone=True), default=func.now())
     updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now())
+    queued_at = Column(DateTime(timezone=True), nullable=True)
     started_at = Column(DateTime(timezone=True), nullable=True)
     completed_at = Column(DateTime(timezone=True), nullable=True)
+    
+    # Background job specific fields
+    attempt_count = Column(Integer, default=0)
+    worker_id = Column(String, nullable=True)
     
     total_records = Column(Integer, default=0)
     parsed_records = Column(Integer, default=0)

@@ -9,3 +9,7 @@ session_factory = create_session_factory(engine)
 
 def get_uow() -> UnitOfWork:
     return UnitOfWork(session_factory)
+
+def get_staging_store():
+    from agent.application.staging import LocalFileStagingStore
+    return LocalFileStagingStore(staging_dir="/tmp/agent_staging")
