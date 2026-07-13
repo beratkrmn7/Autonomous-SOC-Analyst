@@ -1,10 +1,11 @@
 from sqlalchemy.orm import Session
 from agent.persistence.orm_models import (
     Incident, DetectionSignal, CanonicalEvent, 
-    TriageRun, EvidenceItem, Report, AuditEvent
+    TriageRun, EvidenceItem, Report, AuditEvent,
+    IngestionJob
 )
 from agent.persistence.exceptions import RecordNotFoundError
-from typing import List, Optional
+from typing import List
 
 class GenericRepository:
     def __init__(self, session: Session, model_cls):
@@ -41,3 +42,27 @@ class AuditEventRepository(GenericRepository):
         
     def get_by_incident(self, incident_id: str) -> List[AuditEvent]:
         return self.session.query(AuditEvent).filter(AuditEvent.incident_id == incident_id).order_by(AuditEvent.timestamp.desc()).all()
+
+class IngestionJobRepository(GenericRepository):
+    def __init__(self, session: Session):
+        super().__init__(session, IngestionJob)
+
+class CanonicalEventRepository(GenericRepository):
+    def __init__(self, session: Session):
+        super().__init__(session, CanonicalEvent)
+
+class DetectionSignalRepository(GenericRepository):
+    def __init__(self, session: Session):
+        super().__init__(session, DetectionSignal)
+
+class TriageRunRepository(GenericRepository):
+    def __init__(self, session: Session):
+        super().__init__(session, TriageRun)
+
+class EvidenceRepository(GenericRepository):
+    def __init__(self, session: Session):
+        super().__init__(session, EvidenceItem)
+
+class ReportRepository(GenericRepository):
+    def __init__(self, session: Session):
+        super().__init__(session, Report)

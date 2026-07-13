@@ -16,16 +16,18 @@ class DataMapper:
             source_name=event.source_name,
             parser_name=event.parser_name,
             timestamp=event.timestamp,
-            raw_message=event.raw_message,
-            original_log=event.original_log,
-            normalized_fields=event.normalized_fields,
+            observed_at=event.observed_at,
+            source_line=event.source_line,
+            raw_record_hash=event.raw_record_hash,
+            safe_message_excerpt=event.safe_message_excerpt,
+            parser_version=event.parser_version,
             src_ip=event.src_ip,
             dst_ip=event.dst_ip,
             src_port=event.src_port,
             dst_port=event.dst_port,
             protocol=event.protocol,
             action=event.action,
-            user=event.user
+            user=event.source_username
         )
 
     @staticmethod
@@ -35,16 +37,18 @@ class DataMapper:
             source_name=orm_event.source_name,
             parser_name=orm_event.parser_name,
             timestamp=orm_event.timestamp,
-            raw_message=orm_event.raw_message,
-            original_log=orm_event.original_log,
-            normalized_fields=orm_event.normalized_fields,
+            observed_at=orm_event.observed_at,
+            source_line=orm_event.source_line,
+            raw_record_hash=orm_event.raw_record_hash,
+            safe_message_excerpt=orm_event.safe_message_excerpt or "",
+            parser_version=orm_event.parser_version,
             src_ip=orm_event.src_ip,
             dst_ip=orm_event.dst_ip,
             src_port=orm_event.src_port,
             dst_port=orm_event.dst_port,
             protocol=orm_event.protocol,
             action=orm_event.action,
-            user=orm_event.user
+            source_username=orm_event.user
         )
 
     @staticmethod
@@ -53,9 +57,15 @@ class DataMapper:
             signal_id=signal.signal_id,
             rule_id=signal.rule_id,
             rule_name=signal.rule_name,
+            rule_version=getattr(signal, 'rule_version', None),
+            signal_family=getattr(signal, 'signal_family', None),
             signal_type=signal.signal_type,
             severity=signal.severity,
             confidence=signal.confidence,
+            first_seen=getattr(signal, 'first_seen', None),
+            last_seen=getattr(signal, 'last_seen', None),
+            suppressed=getattr(signal, 'suppressed', False),
+            suppression_reason=getattr(signal, 'suppression_reason', None),
             metrics=signal.metrics,
             mitre_techniques=signal.mitre_techniques,
             target_entities=signal.target_entities,
@@ -68,10 +78,15 @@ class DataMapper:
             signal_id=orm_signal.signal_id,
             rule_id=orm_signal.rule_id,
             rule_name=orm_signal.rule_name,
+            rule_version=orm_signal.rule_version,
             signal_type=orm_signal.signal_type,
-            signal_family=orm_signal.signal_type, # Provide fallback
+            signal_family=orm_signal.signal_family or orm_signal.signal_type,
             severity=orm_signal.severity,
             confidence=orm_signal.confidence,
+            first_seen=orm_signal.first_seen,
+            last_seen=orm_signal.last_seen,
+            suppressed=orm_signal.suppressed,
+            suppression_reason=orm_signal.suppression_reason,
             event_ids=orm_signal.event_ids,
             target_entities=orm_signal.target_entities,
             metrics=orm_signal.metrics,
@@ -85,6 +100,7 @@ class DataMapper:
             title=bundle.title,
             incident_type=bundle.incident_type,
             incident_family=bundle.incident_family,
+            merge_key=bundle.merge_key,
             severity=bundle.severity,
             confidence=bundle.confidence,
             first_seen=bundle.first_seen,
@@ -92,7 +108,8 @@ class DataMapper:
             primary_entity=bundle.primary_entity,
             target_entities=bundle.target_entities,
             mitre_techniques=bundle.mitre_techniques,
-            metrics=bundle.metrics
+            metrics=bundle.metrics,
+            status="new"
         )
         for eid in bundle.event_ids:
             inc.events.append(IncidentEvent(event_id=eid, is_context=False))

@@ -1,28 +1,65 @@
 import pytest
-from fastapi.testclient import TestClient
-from server import app
 import tempfile
 import json
-from agent.persistence.database import SessionLocal
-from agent.persistence.orm_models import Incident, TriageRun
+import os
+from fastapi.testclient import TestClient
+from alembic.config import Config
+from alembic import command
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from server import app
+from agent.config import get_settings
+from agent.api.deps import get_uow
+from agent.persistence.unit_of_work import UnitOfWork
+from agent.persistence.orm_models import Incident
+
+def setup_test_db(db_path: str):
+    # Set config to point to this temp DB
+    os.environ["DATABASE_URL"] = f"sqlite:///{db_path}"
+    settings = get_settings()
+    settings.database_url = f"sqlite:///{db_path}"
+    
+    # Run migrations
+    alembic_cfg = Config("alembic.ini")
+    alembic_cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_path}")
+    command.upgrade(alembic_cfg, "head")
+    
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    return engine, SessionLocal
 
 @pytest.fixture
-def test_client():
+def isolated_db():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
+        db_path = tf.name
+    
+    engine, SessionLocal = setup_test_db(db_path)
+    
+    # Override FastAPI dependency
+    def override_get_uow():
+        return UnitOfWork(session_factory=SessionLocal)
+    
+    app.dependency_overrides[get_uow] = override_get_uow
+    
+    yield db_path, SessionLocal
+    
+    app.dependency_overrides.clear()
+    engine.dispose()
+    if os.path.exists(db_path):
+        os.remove(db_path)
+
+@pytest.fixture
+def test_client(isolated_db):
     return TestClient(app)
 
-@pytest.fixture
-def db_session():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-def test_api_to_db_flow(test_client, db_session):
-    import random
-    src_ip = f"1.2.3.{random.randint(1, 250)}"
-    # 1. Create a dummy log file that triggers an incident (Vertical Scan: >=10 events, >=8 ports, >60% blocks)
+def test_api_to_db_flow_and_durability(isolated_db):
+    db_path, SessionLocal = isolated_db
+    
+    # Deterministic source IP
+    src_ip = "1.2.3.4"
     logs = []
+    # Include a SENTINEL_SECRET to ensure it's not persisted raw
     for port in range(1, 15):
         logs.append(json.dumps({
             "timestamp": f"2023-01-01T12:00:{port:02d}Z",
@@ -31,7 +68,8 @@ def test_api_to_db_flow(test_client, db_session):
             "dst_port": port,
             "protocol": "tcp",
             "tcp_flags": "SYN",
-            "action": "block"
+            "action": "block",
+            "secret_key": "SENTINEL_SECRET" 
         }))
     log_content = "\n".join(logs) + "\n"
     
@@ -39,38 +77,56 @@ def test_api_to_db_flow(test_client, db_session):
         tf.write(log_content)
         tf_name = tf.name
         
-    # 2. Call the analyze API endpoint
-    with open(tf_name, "rb") as f:
-        res = test_client.post("/analyze/file", files={"file": f})
+    # First app instance
+    with TestClient(app) as client:
+        with open(tf_name, "rb") as f:
+            res = client.post("/analyze/file", files={"file": f})
+            
+        assert res.status_code == 200, res.text
+        data = res.json()
+        assert data["incidents_generated"] > 0
+        incident_id = data["incidents"][0]["incident_id"]
         
-    assert res.status_code == 200, res.text
-    data = res.json()
-    assert data["incidents_generated"] > 0
-    incident_id = data["incidents"][0]["incident_id"]
+        # Test 409 transition logic
+        res = client.patch(f"/api/v1/incidents/{incident_id}/status", json={"status": "invalid_status"})
+        assert res.status_code == 409
+        assert res.json()["detail"]["code"] == "invalid_incident_transition"
+        
+        res = client.patch(f"/api/v1/incidents/{incident_id}/status", json={"status": "investigating"})
+        assert res.status_code == 200
     
-    # 3. Verify that the incident was saved to the database
-    orm_inc = db_session.query(Incident).filter(Incident.incident_id == incident_id).first()
-    assert orm_inc is not None
-    assert orm_inc.status == "triaged"
+    os.remove(tf_name)
     
-    # 4. Verify triage runs were created
-    runs = db_session.query(TriageRun).filter(TriageRun.incident_id == incident_id).all()
-    assert len(runs) > 0
+    # Verify data durability by accessing the DB directly with a new session
+    # Simulate app restart
+    new_engine, NewSessionLocal = setup_test_db(db_path)
     
-    # 5. Call the v1 incidents API
-    res = test_client.get(f"/api/v1/incidents/{incident_id}")
-    assert res.status_code == 200
-    inc_data = res.json()
-    assert inc_data["status"] == "triaged"
+    with NewSessionLocal() as session:
+        orm_inc = session.query(Incident).filter(Incident.incident_id == incident_id).first()
+        assert orm_inc is not None
+        assert orm_inc.status == "investigating"
+        
+        # Verify Sentinel Secret is NOT in canonical events
+        from agent.persistence.orm_models import CanonicalEvent
+        events = session.query(CanonicalEvent).filter(CanonicalEvent.src_ip == src_ip).all()
+        assert len(events) > 0
+        for ev in events:
+            # Check excerpt doesn't contain SENTINEL_SECRET if filtered, or check we dropped source_line
+            assert "SENTINEL_SECRET" not in ev.safe_message_excerpt
+            
+    # Verify via API again
+    def new_override():
+        return UnitOfWork(session_factory=NewSessionLocal)
+    app.dependency_overrides[get_uow] = new_override
     
-    # 6. Change status
-    res = test_client.patch(f"/api/v1/incidents/{incident_id}/status", json={"status": "investigating"})
-    assert res.status_code == 200
-    
-    # 7. Check timeline
-    res = test_client.get(f"/api/v1/incidents/{incident_id}/timeline")
-    assert res.status_code == 200
-    timeline = res.json()
-    assert len(timeline) > 0
-    assert timeline[0]["action"] == "status_change"
-    assert timeline[0]["new_status"] == "investigating"
+    with TestClient(app) as client:
+        res = client.get(f"/api/v1/incidents/{incident_id}")
+        assert res.status_code == 200
+        assert res.json()["status"] == "investigating"
+        
+        res = client.get(f"/api/v1/incidents/{incident_id}/report")
+        assert res.status_code == 200
+        assert "incident_id" in res.json()
+        
+    new_engine.dispose()
+

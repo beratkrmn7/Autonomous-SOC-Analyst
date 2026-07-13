@@ -39,9 +39,9 @@ def format_detection_result(detector_name: str, title: str, matched_logs: list, 
     
     candidate_evidence = []
     for log in matched_logs[:MAX_EVIDENCE_PER_DETECTOR]:
-        raw_msg = log.get("raw_message", "")
+        raw_msg = log.get("safe_message_excerpt", "")
         if not raw_msg:
-            # Fallback to a stringified subset of the JSON if raw_message is missing
+            # Fallback to a stringified subset of the JSON if safe_message_excerpt is missing
             subset = {k: v for k, v in log.items() if k not in ["event_id", "timestamp"]}
             raw_msg = json.dumps(subset)
             
@@ -186,7 +186,7 @@ def detect_failed_then_success_login(raw_logs: list) -> dict:
 
 def detect_port_scan_pattern(raw_logs: list) -> dict:
     # A true port scan usually involves many blocks from the same IP to different ports.
-    blocks = [log for log in raw_logs if str(log.get("action", "")).lower() == "block" or "BLOCK" in str(log.get("raw_message", "")).upper()]
+    blocks = [log for log in raw_logs if str(log.get("action", "")).lower() == "block" or "BLOCK" in str(log.get("safe_message_excerpt", "")).upper()]
     blocks.sort(key=lambda x: parse_time(x.get("timestamp", "")))
     
     groups: dict[str, List[dict]] = {}
@@ -213,7 +213,7 @@ def detect_port_scan_pattern(raw_logs: list) -> dict:
                 if dst_port:
                     ports_seen.add(dst_port)
                 else:
-                    msg = logs[j].get("raw_message", "")
+                    msg = logs[j].get("safe_message_excerpt", "")
                     port_match = re.search(r'->\s*(?:[0-9]{1,3}\.){3}[0-9]{1,3}:(\d+)', msg)
                     if port_match:
                         ports_seen.add(port_match.group(1))
@@ -295,7 +295,7 @@ def detect_dns_tunneling_pattern(raw_logs: list) -> dict:
     dns_logs = [log for log in raw_logs if log.get("event_type") == "DNS_QUERY"]
     matched = []
     for log in dns_logs:
-        msg = log.get("raw_message", "")
+        msg = log.get("safe_message_excerpt", "")
         # A simple check for long, random-looking subdomains (ignoring legitimate ones like dns.google)
         if "dns.google" in msg:
             continue
@@ -313,7 +313,7 @@ def detect_malware_hash_alert(raw_logs: list) -> dict:
     edr = [log for log in raw_logs if "EDR_ALERT" in log.get("event_type", "")]
     matched = []
     for log in edr:
-        msg = log.get("raw_message", "")
+        msg = log.get("safe_message_excerpt", "")
         if re.search(r'[A-Fa-f0-9]{32,64}', msg) and "family:" in msg.lower():
             matched.append(log)
     return format_detection_result("detect_malware_hash_alert", "Malware Hash EDR Alert", matched)

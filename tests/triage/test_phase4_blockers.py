@@ -26,9 +26,9 @@ def _make_dummy_event(eid="E01"):
         observed_at=datetime.datetime.now(datetime.timezone.utc),
         parser_name="test",
         source_name="test",
-        raw_message="dummy log",
+        safe_message_excerpt="dummy log",
         parse_status="success",
-        original_log={"test_field": "test_value"}
+        parser_metadata={"test_field": "test_value"}
     )
 
 def test_actual_incidentbundle_round_trip():
@@ -400,6 +400,9 @@ def test_metrics_counters():
 
 @patch('agent.nodes.get_triage_runner')
 def test_ingest_detect_endpoints_zero_calls(mock_get_triage_runner):
+    from agent.api.deps import engine
+    from agent.persistence.orm_models import Base
+    Base.metadata.create_all(bind=engine)
     client = TestClient(fast_app)
     
     import tempfile

@@ -58,7 +58,7 @@ class EventFilter:
             return True
             
         # 2. Potential SPI anomalies
-        msg = str(event.raw_message).lower()
+        msg = str(event.safe_message_excerpt).lower()
         if "blocked by spi" in msg or "unexpected tcp flags" in msg:
             return True
             
@@ -68,7 +68,7 @@ class EventFilter:
             # but usually it's worth checking if it's external.
             return True
             
-        # 4. Known malicious patterns from raw_message
+        # 4. Known malicious patterns from safe_message_excerpt
         malicious_patterns = [r"(?i)\bOR\b\s+['\"]?\d['\"]?\s*=\s*['\"]?\d", r"(?i)DROP\s+TABLE", r"(?i)<script>"]
         if any(re.search(p, msg) for p in malicious_patterns):
             return True

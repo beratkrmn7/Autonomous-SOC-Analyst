@@ -1,6 +1,4 @@
-from agent.errors import BaseError
-
-class PersistenceError(BaseError):
+class PersistenceError(Exception):
     pass
 
 class RecordNotFoundError(PersistenceError):

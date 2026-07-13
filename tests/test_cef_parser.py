@@ -10,4 +10,4 @@ def test_cef_parsing():
     evt = p.parse(raw, ctx, "E1")
     assert evt.src_ip == "1.1.1.1"
     assert evt.action == "block"
-    assert evt.raw_message == "hello escaped=pipe"
+    assert evt.safe_message_excerpt == "hello escaped=pipe"

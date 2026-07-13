@@ -32,7 +32,7 @@ def test_evidence_validation_success():
                 "first_seen": "2024-01-01T00:00:00Z",
                 "last_seen": "2024-01-01T00:00:00Z"
             },
-            "events": [{"event_id": "1", "timestamp": None, "observed_at": "2024-01-01T00:00:00Z", "parse_status": "success", "parser_name": "test", "source_name": "test", "raw_message": "test", "original_log": {}}],
+            "events": [{"event_id": "1", "timestamp": None, "observed_at": "2024-01-01T00:00:00Z", "parse_status": "success", "parser_name": "test", "source_name": "test", "safe_message_excerpt": "test", "source_line": None}],
             "context_events": []
         },
         "safe_triage_input": {
@@ -51,7 +51,7 @@ def test_evidence_validation_success():
                 {"evidence_id": "E1", "event_id": "1", "quote": "test", "reason": "test", "source": "test", "canonical_fields": {}, "vendor_original_fields": {}}
             ],
             "limited_context_events": [
-                {"event_id": "1", "event_type": "test", "source_ip": "1.1.1.1", "raw_message": "test", "timestamp": "2024-01-01T00:00:00Z", "parser_name": "test", "source_name": "test"}
+                {"event_id": "1", "event_type": "test", "source_ip": "1.1.1.1", "safe_message_excerpt": "test", "timestamp": "2024-01-01T00:00:00Z", "parser_name": "test", "source_name": "test"}
             ]
         }
     }
@@ -93,7 +93,7 @@ def test_evidence_validation_mismatch():
                 "first_seen": "2024-01-01T00:00:00Z",
                 "last_seen": "2024-01-01T00:00:00Z"
             },
-            "events": [{"event_id": "1", "timestamp": None, "observed_at": "2024-01-01T00:00:00Z", "parse_status": "success", "parser_name": "test", "source_name": "test", "raw_message": "test", "original_log": {}}],
+            "events": [{"event_id": "1", "timestamp": None, "observed_at": "2024-01-01T00:00:00Z", "parse_status": "success", "parser_name": "test", "source_name": "test", "safe_message_excerpt": "test", "source_line": None}],
             "context_events": []
         },
         "safe_triage_input": {
@@ -149,7 +149,7 @@ def test_evidence_validation_false_positive_missing_evidence():
                 "first_seen": "2024-01-01T00:00:00Z",
                 "last_seen": "2024-01-01T00:00:00Z"
             },
-            "events": [{"event_id": "1", "timestamp": None, "observed_at": "2024-01-01T00:00:00Z", "parse_status": "success", "parser_name": "test", "source_name": "test", "raw_message": "test", "original_log": {}}],
+            "events": [{"event_id": "1", "timestamp": None, "observed_at": "2024-01-01T00:00:00Z", "parse_status": "success", "parser_name": "test", "source_name": "test", "safe_message_excerpt": "test", "source_line": None}],
             "context_events": []
         },
         "safe_triage_input": {

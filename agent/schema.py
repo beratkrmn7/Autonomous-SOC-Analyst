@@ -51,6 +51,6 @@ class CanonicalLogEvent(BaseModel):
     source_line: Optional[int] = None
     raw_record_hash: Optional[str] = None
 
-    raw_message: str = ""
-    original_log: Dict[str, Any] = Field(default_factory=dict)
+    safe_message_excerpt: str = ""
     parser_metadata: Optional[Dict[str, Any]] = None
+

@@ -13,8 +13,8 @@ from agent.tools import (
 
 def test_detect_sqli_patterns():
     logs = [
-        {"event_id": "1", "raw_message": "GET /login HTTP/1.1"},
-        {"event_id": "2", "raw_message": "POST /login user=admin' OR '1'='1"}
+        {"event_id": "1", "safe_message_excerpt": "GET /login HTTP/1.1"},
+        {"event_id": "2", "safe_message_excerpt": "POST /login user=admin' OR '1'='1"}
     ]
     res = detect_sqli_patterns(logs)
     assert res["status"] == "alert"
@@ -23,9 +23,9 @@ def test_detect_sqli_patterns():
 
 def test_detect_port_scan_pattern():
     logs = [
-        {"event_id": "1", "timestamp": "2023-10-27T10:00:00Z", "src_ip": "1.1.1.1", "raw_message": "BLOCK TCP 1.1.1.1 -> 2.2.2.2:80"},
-        {"event_id": "2", "timestamp": "2023-10-27T10:00:01Z", "src_ip": "1.1.1.1", "raw_message": "BLOCK TCP 1.1.1.1 -> 2.2.2.2:443"},
-        {"event_id": "3", "timestamp": "2023-10-27T10:00:02Z", "src_ip": "1.1.1.1", "raw_message": "BLOCK TCP 1.1.1.1 -> 2.2.2.2:22"}
+        {"event_id": "1", "timestamp": "2023-10-27T10:00:00Z", "src_ip": "1.1.1.1", "safe_message_excerpt": "BLOCK TCP 1.1.1.1 -> 2.2.2.2:80"},
+        {"event_id": "2", "timestamp": "2023-10-27T10:00:01Z", "src_ip": "1.1.1.1", "safe_message_excerpt": "BLOCK TCP 1.1.1.1 -> 2.2.2.2:443"},
+        {"event_id": "3", "timestamp": "2023-10-27T10:00:02Z", "src_ip": "1.1.1.1", "safe_message_excerpt": "BLOCK TCP 1.1.1.1 -> 2.2.2.2:22"}
     ]
     res = detect_port_scan_pattern(logs)
     assert res["status"] == "alert"
@@ -33,7 +33,7 @@ def test_detect_port_scan_pattern():
 
 def test_detect_backup_false_positive():
     logs = [
-        {"event_id": "1", "raw_message": "Process start: backup_agent.exe"}
+        {"event_id": "1", "safe_message_excerpt": "Process start: backup_agent.exe"}
     ]
     res = detect_backup_false_positive(logs)
     assert res["status"] == "benign"
@@ -41,7 +41,7 @@ def test_detect_backup_false_positive():
 
 def test_detect_suspicious_commands():
     logs = [
-        {"event_id": "1", "raw_message": "powershell -EncodedCommand JABz..."}
+        {"event_id": "1", "safe_message_excerpt": "powershell -EncodedCommand JABz..."}
     ]
     res = detect_suspicious_commands(logs)
     assert res["status"] == "alert"
@@ -49,7 +49,7 @@ def test_detect_suspicious_commands():
 
 def test_detect_dns_tunneling_pattern():
     logs = [
-        {"event_id": "1", "event_type": "DNS_QUERY", "raw_message": "Query: a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0.evil.com"}
+        {"event_id": "1", "event_type": "DNS_QUERY", "safe_message_excerpt": "Query: a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0.evil.com"}
     ]
     res = detect_dns_tunneling_pattern(logs)
     assert res["status"] == "alert"
@@ -57,7 +57,7 @@ def test_detect_dns_tunneling_pattern():
 
 def test_detect_malware_hash_alert():
     logs = [
-        {"event_id": "1", "event_type": "EDR_ALERT", "raw_message": "Alert! family: ransomware hash: 8d1122a30b42c448d39c941dfab40251"}
+        {"event_id": "1", "event_type": "EDR_ALERT", "safe_message_excerpt": "Alert! family: ransomware hash: 8d1122a30b42c448d39c941dfab40251"}
     ]
     res = detect_malware_hash_alert(logs)
     assert res["status"] == "alert"
@@ -65,7 +65,7 @@ def test_detect_malware_hash_alert():
 
 def test_detect_benign_web_traffic():
     logs = [
-        {"event_id": "1", "event_type": "HTTP_GET", "raw_message": "GET /index.html HTTP/1.1 200 OK"}
+        {"event_id": "1", "event_type": "HTTP_GET", "safe_message_excerpt": "GET /index.html HTTP/1.1 200 OK"}
     ]
     res = detect_benign_web_traffic(logs)
     assert res["status"] == "benign"
@@ -73,8 +73,8 @@ def test_detect_benign_web_traffic():
 
 def test_detect_normal_admin_login_success():
     logs = [
-        {"event_id": "1", "timestamp": "2023-10-27T10:00:00Z", "src_ip": "10.0.0.5", "raw_message": "POST /login user=admin 200 OK"},
-        {"event_id": "2", "timestamp": "2023-10-27T10:01:00Z", "src_ip": "10.0.0.5", "raw_message": "GET /dashboard HTTP/1.1 200 OK"}
+        {"event_id": "1", "timestamp": "2023-10-27T10:00:00Z", "src_ip": "10.0.0.5", "safe_message_excerpt": "POST /login user=admin 200 OK"},
+        {"event_id": "2", "timestamp": "2023-10-27T10:01:00Z", "src_ip": "10.0.0.5", "safe_message_excerpt": "GET /dashboard HTTP/1.1 200 OK"}
     ]
     res = detect_normal_admin_login(logs)
     assert res["status"] == "benign"
@@ -83,8 +83,8 @@ def test_detect_normal_admin_login_success():
 
 def test_detect_normal_admin_login_sqli():
     logs = [
-        {"event_id": "1", "timestamp": "2023-10-27T10:00:00Z", "src_ip": "10.0.0.5", "raw_message": "POST /login user=admin' OR '1'='1 200 OK"},
-        {"event_id": "2", "timestamp": "2023-10-27T10:01:00Z", "src_ip": "10.0.0.5", "raw_message": "GET /dashboard HTTP/1.1 200 OK"}
+        {"event_id": "1", "timestamp": "2023-10-27T10:00:00Z", "src_ip": "10.0.0.5", "safe_message_excerpt": "POST /login user=admin' OR '1'='1 200 OK"},
+        {"event_id": "2", "timestamp": "2023-10-27T10:01:00Z", "src_ip": "10.0.0.5", "safe_message_excerpt": "GET /dashboard HTTP/1.1 200 OK"}
     ]
     res = detect_normal_admin_login(logs)
     assert res["status"] == "clean"
@@ -92,8 +92,8 @@ def test_detect_normal_admin_login_sqli():
 
 def test_detect_failed_then_success_login():
     logs = [
-        {"event_id": "1", "timestamp": "2023-10-27T10:00:00Z", "src_ip": "192.168.1.10", "dst_ip": "10.0.0.2", "raw_message": "Login failed"},
-        {"event_id": "2", "timestamp": "2023-10-27T10:02:00Z", "src_ip": "192.168.1.10", "dst_ip": "10.0.0.2", "raw_message": "Login accepted"}
+        {"event_id": "1", "timestamp": "2023-10-27T10:00:00Z", "src_ip": "192.168.1.10", "dst_ip": "10.0.0.2", "safe_message_excerpt": "Login failed"},
+        {"event_id": "2", "timestamp": "2023-10-27T10:02:00Z", "src_ip": "192.168.1.10", "dst_ip": "10.0.0.2", "safe_message_excerpt": "Login accepted"}
     ]
     res = detect_failed_then_success_login(logs)
     assert res["status"] == "alert"
@@ -101,14 +101,14 @@ def test_detect_failed_then_success_login():
 
 def test_detect_failed_then_success_login_unrelated():
     logs = [
-        {"event_id": "1", "timestamp": "2023-10-27T10:00:00Z", "src_ip": "192.168.1.10", "dst_ip": "10.0.0.2", "raw_message": "Login failed"},
-        {"event_id": "2", "timestamp": "2023-10-27T10:02:00Z", "src_ip": "192.168.1.20", "dst_ip": "10.0.0.2", "raw_message": "Login accepted"}
+        {"event_id": "1", "timestamp": "2023-10-27T10:00:00Z", "src_ip": "192.168.1.10", "dst_ip": "10.0.0.2", "safe_message_excerpt": "Login failed"},
+        {"event_id": "2", "timestamp": "2023-10-27T10:02:00Z", "src_ip": "192.168.1.20", "dst_ip": "10.0.0.2", "safe_message_excerpt": "Login accepted"}
     ]
     res = detect_failed_then_success_login(logs)
     assert res["status"] == "clean"
 
 def test_max_candidate_evidence():
-    logs = [{"event_id": str(i), "raw_message": f"GET /login HTTP/1.1 OR '1'='1 {i}"} for i in range(10)]
+    logs = [{"event_id": str(i), "safe_message_excerpt": f"GET /login HTTP/1.1 OR '1'='1 {i}"} for i in range(10)]
     res = detect_sqli_patterns(logs)
     assert res["status"] == "alert"
     assert res["matched_count"] == 10

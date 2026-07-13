@@ -1,8 +1,8 @@
 """Initial schema
 
-Revision ID: f34a07e35399
+Revision ID: 70966a52d1b7
 Revises: 
-Create Date: 2026-07-12 16:08:51.301337
+Create Date: 2026-07-13 09:13:29.518821
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = 'f34a07e35399'
+revision: str = '70966a52d1b7'
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -25,10 +25,16 @@ def upgrade() -> None:
     sa.Column('signal_id', sa.String(), nullable=False),
     sa.Column('rule_id', sa.String(), nullable=True),
     sa.Column('rule_name', sa.String(), nullable=True),
+    sa.Column('rule_version', sa.String(), nullable=True),
+    sa.Column('signal_family', sa.String(), nullable=True),
     sa.Column('signal_type', sa.String(), nullable=True),
     sa.Column('severity', sa.String(), nullable=True),
     sa.Column('confidence', sa.Float(), nullable=True),
+    sa.Column('first_seen', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('last_seen', sa.DateTime(timezone=True), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('suppressed', sa.Boolean(), nullable=True),
+    sa.Column('suppression_reason', sa.String(), nullable=True),
     sa.Column('metrics', sa.JSON(), nullable=True),
     sa.Column('mitre_techniques', sa.JSON(), nullable=True),
     sa.Column('target_entities', sa.JSON(), nullable=True),
@@ -44,6 +50,9 @@ def upgrade() -> None:
     sa.Column('status', sa.String(), nullable=True),
     sa.Column('severity', sa.String(), nullable=True),
     sa.Column('confidence', sa.Float(), nullable=True),
+    sa.Column('version', sa.Integer(), nullable=True),
+    sa.Column('merge_key', sa.String(), nullable=True),
+    sa.Column('review_reason', sa.String(), nullable=True),
     sa.Column('first_seen', sa.DateTime(timezone=True), nullable=True),
     sa.Column('last_seen', sa.DateTime(timezone=True), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=True),
@@ -59,7 +68,13 @@ def upgrade() -> None:
     op.create_table('ingestion_jobs',
     sa.Column('id', sa.String(), nullable=False),
     sa.Column('source_name', sa.String(), nullable=True),
+    sa.Column('original_filename', sa.String(), nullable=True),
+    sa.Column('file_sha256', sa.String(), nullable=True),
+    sa.Column('status', sa.String(), nullable=True),
+    sa.Column('error_code', sa.String(), nullable=True),
     sa.Column('input_format', sa.String(), nullable=True),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('started_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('completed_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('total_records', sa.Integer(), nullable=True),
@@ -83,26 +98,38 @@ def upgrade() -> None:
     op.create_index(op.f('ix_log_sources_source_name'), 'log_sources', ['source_name'], unique=True)
     op.create_table('audit_events',
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
+    sa.Column('audit_event_id', sa.String(), nullable=True),
     sa.Column('incident_id', sa.String(), nullable=True),
     sa.Column('timestamp', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('event_type', sa.String(), nullable=True),
+    sa.Column('entity_type', sa.String(), nullable=True),
+    sa.Column('entity_id', sa.String(), nullable=True),
     sa.Column('action', sa.String(), nullable=True),
     sa.Column('old_status', sa.String(), nullable=True),
     sa.Column('new_status', sa.String(), nullable=True),
+    sa.Column('actor_type', sa.String(), nullable=True),
+    sa.Column('actor_id', sa.String(), nullable=True),
     sa.Column('actor', sa.String(), nullable=True),
+    sa.Column('old_values_json', sa.JSON(), nullable=True),
+    sa.Column('new_values_json', sa.JSON(), nullable=True),
+    sa.Column('request_id', sa.String(), nullable=True),
     sa.Column('details', sa.JSON(), nullable=True),
     sa.ForeignKeyConstraint(['incident_id'], ['incidents.incident_id'], ),
     sa.PrimaryKeyConstraint('id')
     )
+    op.create_index(op.f('ix_audit_events_audit_event_id'), 'audit_events', ['audit_event_id'], unique=True)
     op.create_index(op.f('ix_audit_events_incident_id'), 'audit_events', ['incident_id'], unique=False)
     op.create_table('canonical_events',
     sa.Column('event_id', sa.String(), nullable=False),
     sa.Column('job_id', sa.String(), nullable=True),
     sa.Column('source_name', sa.String(), nullable=True),
     sa.Column('parser_name', sa.String(), nullable=True),
+    sa.Column('parser_version', sa.String(), nullable=True),
     sa.Column('timestamp', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('raw_message', sa.String(), nullable=True),
-    sa.Column('original_log', sa.JSON(), nullable=True),
-    sa.Column('normalized_fields', sa.JSON(), nullable=True),
+    sa.Column('observed_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('source_line', sa.Integer(), nullable=True),
+    sa.Column('raw_record_hash', sa.String(), nullable=True),
+    sa.Column('safe_message_excerpt', sa.String(), nullable=True),
     sa.Column('src_ip', sa.String(), nullable=True),
     sa.Column('dst_ip', sa.String(), nullable=True),
     sa.Column('src_port', sa.Integer(), nullable=True),
@@ -125,7 +152,8 @@ def upgrade() -> None:
     sa.Column('event_id', sa.String(), nullable=True),
     sa.Column('is_context', sa.Boolean(), nullable=True),
     sa.ForeignKeyConstraint(['incident_id'], ['incidents.incident_id'], ),
-    sa.PrimaryKeyConstraint('id')
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('incident_id', 'event_id', name='uq_incident_event')
     )
     op.create_index(op.f('ix_incident_events_event_id'), 'incident_events', ['event_id'], unique=False)
     op.create_index(op.f('ix_incident_events_incident_id'), 'incident_events', ['incident_id'], unique=False)
@@ -135,32 +163,35 @@ def upgrade() -> None:
     sa.Column('signal_id', sa.String(), nullable=True),
     sa.ForeignKeyConstraint(['incident_id'], ['incidents.incident_id'], ),
     sa.ForeignKeyConstraint(['signal_id'], ['detection_signals.signal_id'], ),
-    sa.PrimaryKeyConstraint('id')
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('incident_id', 'signal_id', name='uq_incident_signal')
     )
     op.create_index(op.f('ix_incident_signals_incident_id'), 'incident_signals', ['incident_id'], unique=False)
     op.create_index(op.f('ix_incident_signals_signal_id'), 'incident_signals', ['signal_id'], unique=False)
-    op.create_table('reports',
-    sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
-    sa.Column('incident_id', sa.String(), nullable=True),
-    sa.Column('generated_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('content', sa.String(), nullable=True),
-    sa.Column('entities', sa.JSON(), nullable=True),
-    sa.Column('recommended_actions', sa.JSON(), nullable=True),
-    sa.Column('mitre_techniques', sa.JSON(), nullable=True),
-    sa.ForeignKeyConstraint(['incident_id'], ['incidents.incident_id'], ),
-    sa.PrimaryKeyConstraint('id')
-    )
-    op.create_index(op.f('ix_reports_incident_id'), 'reports', ['incident_id'], unique=False)
     op.create_table('triage_runs',
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
+    sa.Column('triage_run_id', sa.String(), nullable=True),
     sa.Column('incident_id', sa.String(), nullable=True),
     sa.Column('started_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('completed_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('status', sa.String(), nullable=True),
+    sa.Column('provider', sa.String(), nullable=True),
+    sa.Column('model', sa.String(), nullable=True),
+    sa.Column('prompt_version', sa.String(), nullable=True),
+    sa.Column('schema_version', sa.String(), nullable=True),
     sa.Column('verdict', sa.String(), nullable=True),
     sa.Column('severity', sa.String(), nullable=True),
     sa.Column('confidence_score', sa.Float(), nullable=True),
     sa.Column('incident_type', sa.String(), nullable=True),
+    sa.Column('review_reason', sa.String(), nullable=True),
+    sa.Column('cache_hit', sa.Boolean(), nullable=True),
     sa.Column('iteration_count', sa.Integer(), nullable=True),
+    sa.Column('search_count', sa.Integer(), nullable=True),
+    sa.Column('tool_count', sa.Integer(), nullable=True),
+    sa.Column('retry_count', sa.Integer(), nullable=True),
+    sa.Column('latency_ms', sa.Integer(), nullable=True),
+    sa.Column('token_usage', sa.JSON(), nullable=True),
+    sa.Column('estimated_cost', sa.Float(), nullable=True),
     sa.Column('messages', sa.JSON(), nullable=True),
     sa.Column('search_history', sa.JSON(), nullable=True),
     sa.Column('errors', sa.JSON(), nullable=True),
@@ -168,31 +199,61 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('id')
     )
     op.create_index(op.f('ix_triage_runs_incident_id'), 'triage_runs', ['incident_id'], unique=False)
+    op.create_index(op.f('ix_triage_runs_triage_run_id'), 'triage_runs', ['triage_run_id'], unique=True)
     op.create_table('evidence_items',
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
+    sa.Column('evidence_id', sa.String(), nullable=True),
+    sa.Column('incident_id', sa.String(), nullable=True),
     sa.Column('triage_run_id', sa.Integer(), nullable=True),
     sa.Column('event_id', sa.String(), nullable=True),
     sa.Column('quote', sa.String(), nullable=True),
     sa.Column('reason', sa.String(), nullable=True),
     sa.Column('source', sa.String(), nullable=True),
+    sa.Column('validation_status', sa.String(), nullable=True),
+    sa.Column('rejection_reason', sa.String(), nullable=True),
     sa.Column('original_fields', sa.JSON(), nullable=True),
     sa.Column('correlation_context', sa.JSON(), nullable=True),
+    sa.ForeignKeyConstraint(['incident_id'], ['incidents.incident_id'], ),
     sa.ForeignKeyConstraint(['triage_run_id'], ['triage_runs.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
+    op.create_index(op.f('ix_evidence_items_evidence_id'), 'evidence_items', ['evidence_id'], unique=True)
+    op.create_index(op.f('ix_evidence_items_incident_id'), 'evidence_items', ['incident_id'], unique=False)
     op.create_index(op.f('ix_evidence_items_triage_run_id'), 'evidence_items', ['triage_run_id'], unique=False)
+    op.create_table('reports',
+    sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
+    sa.Column('report_id', sa.String(), nullable=True),
+    sa.Column('incident_id', sa.String(), nullable=True),
+    sa.Column('triage_run_id', sa.Integer(), nullable=True),
+    sa.Column('generated_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('format', sa.String(), nullable=True),
+    sa.Column('content', sa.String(), nullable=True),
+    sa.Column('content_sha256', sa.String(), nullable=True),
+    sa.Column('entities', sa.JSON(), nullable=True),
+    sa.Column('recommended_actions', sa.JSON(), nullable=True),
+    sa.Column('mitre_techniques', sa.JSON(), nullable=True),
+    sa.ForeignKeyConstraint(['incident_id'], ['incidents.incident_id'], ),
+    sa.ForeignKeyConstraint(['triage_run_id'], ['triage_runs.id'], ),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index(op.f('ix_reports_incident_id'), 'reports', ['incident_id'], unique=False)
+    op.create_index(op.f('ix_reports_report_id'), 'reports', ['report_id'], unique=True)
     # ### end Alembic commands ###
 
 
 def downgrade() -> None:
     """Downgrade schema."""
     # ### commands auto generated by Alembic - please adjust! ###
-    op.drop_index(op.f('ix_evidence_items_triage_run_id'), table_name='evidence_items')
-    op.drop_table('evidence_items')
-    op.drop_index(op.f('ix_triage_runs_incident_id'), table_name='triage_runs')
-    op.drop_table('triage_runs')
+    op.drop_index(op.f('ix_reports_report_id'), table_name='reports')
     op.drop_index(op.f('ix_reports_incident_id'), table_name='reports')
     op.drop_table('reports')
+    op.drop_index(op.f('ix_evidence_items_triage_run_id'), table_name='evidence_items')
+    op.drop_index(op.f('ix_evidence_items_incident_id'), table_name='evidence_items')
+    op.drop_index(op.f('ix_evidence_items_evidence_id'), table_name='evidence_items')
+    op.drop_table('evidence_items')
+    op.drop_index(op.f('ix_triage_runs_triage_run_id'), table_name='triage_runs')
+    op.drop_index(op.f('ix_triage_runs_incident_id'), table_name='triage_runs')
+    op.drop_table('triage_runs')
     op.drop_index(op.f('ix_incident_signals_signal_id'), table_name='incident_signals')
     op.drop_index(op.f('ix_incident_signals_incident_id'), table_name='incident_signals')
     op.drop_table('incident_signals')
@@ -207,6 +268,7 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_canonical_events_dst_ip'), table_name='canonical_events')
     op.drop_table('canonical_events')
     op.drop_index(op.f('ix_audit_events_incident_id'), table_name='audit_events')
+    op.drop_index(op.f('ix_audit_events_audit_event_id'), table_name='audit_events')
     op.drop_table('audit_events')
     op.drop_index(op.f('ix_log_sources_source_name'), table_name='log_sources')
     op.drop_table('log_sources')

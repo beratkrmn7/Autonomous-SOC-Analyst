@@ -15,6 +15,106 @@ class AnalysisService:
         self.filter_engine = EventFilter()
         self.detection_engine = DetectionEngine()
 
+    def _persist_analysis(self, result: AnalysisResult, run_triage: bool):
+        from agent.persistence.mappers import DataMapper
+        from agent.persistence.lifecycle import IncidentLifecycle
+        from agent.persistence.orm_models import IngestionJob, TriageRun, EvidenceItem, Report
+        import uuid
+        
+        with self.uow as uow:
+            # 1. Ingestion Job
+            job_id = None
+            if result.ingestion_result:
+                job_id = str(uuid.uuid4())
+                job = IngestionJob(
+                    id=job_id,
+                    source_name=result.ingestion_result.source_name,
+                    input_format=result.ingestion_result.input_format.value,
+                    total_records=result.ingestion_result.metrics.total_records,
+                    parsed_records=result.ingestion_result.metrics.parsed_records,
+                    failed_records=result.ingestion_result.metrics.failed_records,
+                    unsupported_records=result.ingestion_result.metrics.unsupported_records,
+                    duration_ms=result.ingestion_result.metrics.duration_ms,
+                    parser_counts=result.ingestion_result.metrics.parser_counts,
+                    error_counts=result.ingestion_result.metrics.error_counts
+                )
+                uow.ingestion_jobs.add(job)
+            
+            # 2. Canonical Events
+            for event in result.event_map.values():
+                orm_event = DataMapper.domain_event_to_orm(event, job_id=job_id)
+                uow.canonical_events.add(orm_event)
+                
+            # 3. Detection Signals
+            for signal in result.detection_result.signals:
+                orm_signal = DataMapper.domain_signal_to_orm(signal)
+                uow.detection_signals.add(orm_signal)
+                
+            # 4. Incidents
+            for inc in result.detection_result.incidents:
+                orm_inc = DataMapper.domain_incident_to_orm(inc)
+                
+                # Check idempotency/existing
+                existing = uow.incidents.get(orm_inc.incident_id)
+                if not existing:
+                    uow.incidents.add(orm_inc)
+                    IncidentLifecycle.transition(orm_inc, "new", actor="detection_engine")
+            
+            uow.session.flush() # Flush to get incident IDs ready for triage references
+            
+            # 5, 6, 7. Triage Run, Evidence, Report
+            if run_triage:
+                for inc_state in result.incidents:
+                    incident_id = inc_state.get("incident_id")
+                    if not incident_id:
+                        continue
+                        
+                    orm_inc = uow.incidents.get(incident_id)
+                    if orm_inc:
+                        verdict = inc_state.get("triage_verdict")
+                        new_status = "triaged" if verdict else "investigating"
+                        IncidentLifecycle.transition(orm_inc, new_status, actor="triage_agent", details={"verdict": verdict})
+                        
+                        run = TriageRun(
+                            triage_run_id=str(uuid.uuid4()),
+                            incident_id=incident_id,
+                            verdict=verdict,
+                            severity=inc_state.get("severity"),
+                            confidence_score=inc_state.get("confidence_score"),
+                            incident_type=inc_state.get("incident_type"),
+                            iteration_count=inc_state.get("iteration_count", 0),
+                            status="completed" if verdict else "failed"
+                        )
+                        uow.triage_runs.add(run)
+                        uow.session.flush()
+                        
+                        for ev in inc_state.get("validated_evidence", []):
+                            evidence = EvidenceItem(
+                                evidence_id=str(uuid.uuid4()),
+                                incident_id=incident_id,
+                                triage_run_id=run.id,
+                                event_id=ev.get("event_id"),
+                                quote=ev.get("quote"),
+                                reason=ev.get("reason"),
+                                source=ev.get("source"),
+                                validation_status="validated"
+                            )
+                            uow.evidence.add(evidence)
+                            
+                        if inc_state.get("final_report"):
+                            report = Report(
+                                report_id=str(uuid.uuid4()),
+                                incident_id=incident_id,
+                                triage_run_id=run.id,
+                                content=inc_state.get("final_report"),
+                                entities=inc_state.get("entities", {}),
+                                recommended_actions=inc_state.get("recommended_actions", []),
+                                mitre_techniques=inc_state.get("mitre_techniques", [])
+                            )
+                            uow.reports.add(report)
+                            
+            # 8. Commit (happens on context exit)
+
     def analyze_file(self, file_path: str, *, run_triage: bool = True, source_name: Optional[str] = None) -> AnalysisResult:
         # 1. Ingestion
         ingest_result = self.ingest.ingest_file(file_path)
@@ -54,8 +154,7 @@ class AnalysisService:
         
         # 4. Persistence setup (Optional Phase 5 integration point)
         # If we have a Unit Of Work, we can persist the canonical events, signals, and incidents here.
-        if self.uow:
-            pass # TODO: Implement persistence hook
+        # This will be done after triage, to ensure a single transaction.
         
         # 5. Graph Invocation (Triage)
         for inc in det_result.incidents:
@@ -65,16 +164,16 @@ class AnalysisService:
                 try:
                     final_state = app.invoke(initial_state)
                     result.incidents.append(final_state)
-                    
-                    if self.uow:
-                        pass # TODO: Persist final state (Triage run, Evidence, Report)
-                        
                 except Exception as e:
                     print(f"Error during triage: {e}")
                     traceback.print_exc()
                     result.incidents.append(initial_state)
             else:
                 result.incidents.append(initial_state)
+                
+        # 6. Persistence
+        if self.uow:
+            self._persist_analysis(result, run_triage)
                 
         return result
 

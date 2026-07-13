@@ -17,12 +17,12 @@ class MockParser(BaseLogParser):
         if not isinstance(raw_record, dict):
             return ParserMatch(matched=False, confidence=0.0, reason="Not a JSON dictionary")
             
-        # Our mock logs have parser_name == "mock" or raw_message and event_type
+        # Our mock logs have parser_name == "mock" or safe_message_excerpt and event_type
         if raw_record.get("parser_name") == "mock":
             return ParserMatch(matched=True, confidence=1.0, reason="Explicit parser_name=mock")
             
-        if "raw_message" in raw_record and "event_type" in raw_record:
-            return ParserMatch(matched=True, confidence=0.8, reason="Contains raw_message and event_type")
+        if "safe_message_excerpt" in raw_record and "event_type" in raw_record:
+            return ParserMatch(matched=True, confidence=0.8, reason="Contains safe_message_excerpt and event_type")
             
         return ParserMatch(matched=False, confidence=0.0, reason="Does not match mock signature")
         
@@ -49,8 +49,8 @@ class MockParser(BaseLogParser):
             protocol=raw_record.get("protocol"),
             action=raw_record.get("action"),
             event_type=raw_record.get("event_type"),
-            raw_message=raw_record.get("raw_message", ""),
-            original_log=raw_record,
+            safe_message_excerpt=raw_record.get("safe_message_excerpt", ""),
+            
             source_username=raw_record.get("user") or raw_record.get("username"),
             parser_name=self.name,
             parser_version=self.version,

@@ -1,16 +1,20 @@
 from agent.persistence.orm_models import Incident, AuditEvent
-from agent.application.errors import InvalidTransitionError
 from datetime import datetime, timezone
+from fastapi import HTTPException
 
 class IncidentLifecycle:
-    # new -> triaged -> investigating -> resolved/false_positive
+    # Full lifecycle: new -> triaged -> needs_review -> assigned -> investigating -> confirmed -> false_positive -> resolved -> closed -> reopened
     VALID_TRANSITIONS = {
-        "new": ["triaged", "closed"],
-        "triaged": ["investigating", "resolved", "false_positive"],
-        "investigating": ["resolved", "false_positive"],
-        "resolved": ["new"], # reopen
-        "false_positive": ["new"], # reopen
-        "closed": ["new"]
+        "new": ["triaged", "closed", "needs_review"],
+        "triaged": ["investigating", "assigned", "needs_review", "resolved", "false_positive"],
+        "needs_review": ["assigned", "investigating", "triaged"],
+        "assigned": ["investigating"],
+        "investigating": ["confirmed", "resolved", "false_positive"],
+        "confirmed": ["resolved"],
+        "resolved": ["closed", "reopened"],
+        "false_positive": ["closed", "reopened"],
+        "closed": ["reopened"],
+        "reopened": ["investigating", "assigned", "needs_review"]
     }
 
     @staticmethod
@@ -23,9 +27,17 @@ class IncidentLifecycle:
             
         allowed = IncidentLifecycle.VALID_TRANSITIONS.get(old_status, [])
         if new_status not in allowed:
-            raise InvalidTransitionError(incident.incident_id, old_status, new_status)
+            raise HTTPException(
+                status_code=409, 
+                detail={
+                    "code": "invalid_incident_transition", 
+                    "message": f"Cannot transition from {old_status} to {new_status}"
+                }
+            )
             
         incident.status = new_status
+        # Optimistic concurrency check handled in service/repo if version needed, else just increment version
+        incident.version = (incident.version or 1) + 1
         
         audit = AuditEvent(
             incident_id=incident.incident_id,

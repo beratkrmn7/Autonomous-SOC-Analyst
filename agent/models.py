@@ -14,7 +14,7 @@ class EvidenceItem(BaseModel):
     quote: str = Field(description="The exact quote or summary from the log.")
     reason: str = Field(description="Reason why this evidence supports the verdict.")
     source: str = Field(description="The source of the evidence, usually 'raw_logs' or the name of a tool.")
-    original_fields: Dict[str, Any] = Field(default_factory=dict, description="Fields from original_log for validation.")
+    original_fields: Dict[str, Any] = Field(default_factory=dict, description="Fields from source_line for validation.")
     correlation_context: Dict[str, Any] = Field(default_factory=dict, description="Metrics context.")
 
 class ParseFailure(BaseModel):

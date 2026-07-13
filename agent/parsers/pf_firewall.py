@@ -52,7 +52,7 @@ class PfFirewallParser(BaseLogParser):
             elif "block" in action or "deny" in action or "drop" in action:
                 action = "block"
                 
-        # construct raw_message safely
+        # construct safe_message_excerpt safely
         # Format: BLOCK TCP 45.142.193.169:50668 -> 193.255.181.27:3389 flags=S inbound_zone=wan1-zone
         act = (action or 'UNKNOWN').upper()
         proto = (raw_record.get("proto") or 'UNKNOWN').upper()
@@ -121,8 +121,8 @@ class PfFirewallParser(BaseLogParser):
             translated_dst_ip=raw_record.get("destinationTranslatedAddress"),
             translated_src_port=safe_int(raw_record.get("sourceTranslatedPort")),
             translated_dst_port=safe_int(raw_record.get("destinationTranslatedPort")),
-            raw_message=raw_msg,
-            original_log=raw_record,
+            safe_message_excerpt=raw_msg,
+            
             parser_name=self.name,
             parser_version=self.version,
             parser_confidence=0.95,

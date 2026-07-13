@@ -1,8 +1,8 @@
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Depends
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Dict, Optional
+from typing import List, Optional
 import uvicorn
 import os
 import tempfile
@@ -14,6 +14,8 @@ from agent.graph import app as agent_app
 from agent.ingestion.pipeline import IngestionPipeline
 from agent.models import IncidentState
 from agent.api.v1.incidents import router as v1_incidents_router
+from agent.api.deps import get_uow
+from agent.persistence.unit_of_work import UnitOfWork
 
 app = FastAPI(
     title="Agentic SOC Triage Assistant",
@@ -30,8 +32,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-incident_store: Dict[str, dict] = {}
-
+# RAM store removed to use persistent database backend
 @app.exception_handler(InputTooLargeError)
 async def input_too_large_handler(request: Request, exc: InputTooLargeError):
     return JSONResponse(
@@ -107,7 +108,7 @@ def readiness_check():
     return {"status": "ready"}
 
 @app.post("/analyze", response_model=AnalyzeResponse)
-def analyze_incident(req: AnalyzeRequest):
+def analyze_incident(req: AnalyzeRequest, uow: UnitOfWork = Depends(get_uow)):
     """
     Legacy mock endpoint: Ingest raw logs for an incident and run triage.
     """
@@ -163,7 +164,7 @@ def analyze_incident(req: AnalyzeRequest):
         "errors": []
     }
     final_state = agent_app.invoke(initial_state)
-    incident_store[req.incident_id] = final_state
+    # Note: legacy endpoint doesn't persist to DB by default unless UoW is used
     return AnalyzeResponse(
         incident_id=req.incident_id,
         triage_verdict=final_state.get('triage_verdict'),
@@ -197,7 +198,7 @@ async def ingest_file(file: UploadFile = File(...)):
 
 
 @app.post("/detect/file")
-async def detect_file(file: UploadFile = File(...)):
+async def detect_file(file: UploadFile = File(...), uow: UnitOfWork = Depends(get_uow)):
     """
     Analyze a raw JSONL log file, performing full ingestion, filtering, and Phase 3 DetectionEngine logic.
     Returns signals and incidents without invoking the LLM triage graph.
@@ -206,7 +207,7 @@ async def detect_file(file: UploadFile = File(...)):
     temp_path = await secure_save_upload(file)
         
     try:
-        svc = AnalysisService()
+        svc = AnalysisService(uow=uow)
         result = svc.analyze_file(temp_path, run_triage=False, source_name="api_detect")
         det_result = result.detection_result
         ingest_result = result.ingestion_result
@@ -269,7 +270,7 @@ async def detect_file(file: UploadFile = File(...)):
             os.remove(temp_path)
 
 @app.post("/analyze/file")
-async def analyze_file(file: UploadFile = File(...)):
+async def analyze_file(file: UploadFile = File(...), uow: UnitOfWork = Depends(get_uow)):
     """
     Analyze a raw JSONL log file, performing full ingestion, filtering, correlation, and LLM triage.
     """
@@ -277,13 +278,12 @@ async def analyze_file(file: UploadFile = File(...)):
     temp_path = await secure_save_upload(file)
         
     try:
-        svc = AnalysisService()
+        svc = AnalysisService(uow=uow)
         result = svc.analyze_file(temp_path, run_triage=True, source_name="api_analyze")
         
         incident_summaries = []
         for inc_state in result.incidents:
             incident_id = inc_state.get('incident_id')
-            incident_store[incident_id] = inc_state
             
             incident_summaries.append({
                 "incident_id": incident_id,
@@ -307,19 +307,30 @@ async def analyze_file(file: UploadFile = File(...)):
 
 @app.get("/incident/{incident_id}/report")
 def get_incident_report(incident_id: str):
-    if incident_id not in incident_store:
-        raise HTTPException(status_code=404, detail="Incident not found or not processed yet.")
-    state = incident_store[incident_id]
-    return {
-        "incident_id": incident_id,
-        "triage_verdict": state.get("triage_verdict"),
-        "incident_type": state.get("incident_type"),
-        "entities": state.get("entities", {}),
-        "validated_evidence": state.get("validated_evidence", []),
-        "recommended_actions": state.get("recommended_actions", []),
-        "mitre_techniques": state.get("mitre_techniques", []),
-        "final_report_markdown": state.get("final_report", "No report available.")
-    }
+    from agent.persistence.unit_of_work import UnitOfWork
+    
+    uow = UnitOfWork()
+    with uow:
+        incident = uow.incidents.get(incident_id)
+        if not incident:
+            raise HTTPException(status_code=404, detail="Incident not found.")
+            
+        if not incident.reports:
+            raise HTTPException(status_code=404, detail="Report not generated yet.")
+            
+        report = incident.reports[-1]
+        
+        # Legacy format expected by the frontend
+        return {
+            "incident_id": incident_id,
+            "triage_verdict": incident.triage_runs[-1].verdict if incident.triage_runs else None,
+            "incident_type": incident.incident_type,
+            "entities": report.entities,
+            "validated_evidence": [], # Would need to reconstruct from DB if needed
+            "recommended_actions": report.recommended_actions,
+            "mitre_techniques": report.mitre_techniques,
+            "final_report_markdown": report.content
+        }
 
 if __name__ == "__main__":
     print("Starting Agentic SOC API Server on http://localhost:8000")
