@@ -82,6 +82,7 @@ def test_celery_redis_integration_pipeline(background_service, isolated_db, stag
         db = isolated_db()
         try:
             while time.time() - start_time < timeout:
+                db.expire_all()
                 job = db.query(IngestionJob).get(job_id)
                 if job and job.status in ("completed", "failed"):
                     break
