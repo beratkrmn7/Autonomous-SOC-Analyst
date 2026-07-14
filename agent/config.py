@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     celery_queue_name: str = "soc-analysis"
     staging_dir: str = "/tmp/agent_staging"
     
+    job_max_attempts: int = Field(default=3, ge=1)
+    job_retry_base_seconds: int = Field(default=5, ge=1)
+    job_retry_max_seconds: int = Field(default=60, ge=1)
+    job_processing_lease_seconds: int = Field(default=300, ge=1)
+    
     @property
     def safe_database_url(self) -> str:
         """Returns the database URL with the password redacted for safe logging."""

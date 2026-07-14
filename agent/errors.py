@@ -46,3 +46,11 @@ class QueuePublishFailedError(Exception):
         self.job_id = job_id
         self.error_code = error_code
         super().__init__(f"Failed to publish job {job_id} to queue broker.")
+
+class RetryableJobError(Exception):
+    """Raised for explicitly known temporary failures that should be retried."""
+    pass
+
+class PermanentJobError(Exception):
+    """Raised for explicitly known permanent failures that should not be retried."""
+    pass

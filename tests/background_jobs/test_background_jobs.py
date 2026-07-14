@@ -194,7 +194,7 @@ def test_failed_worker_execution_stores_safe_error(db_session, worker, staging_d
     # Reload job
     db_session.refresh(job)
     assert job.status == "failed"
-    assert job.error_code == "WORKER_EXECUTION_FAILED"
+    assert job.error_code == "staging_file_missing"
 
 def test_api_never_returns_staged_local_path(client, db_session):
     test_content = b'test'
