@@ -304,3 +304,18 @@ class LogSource(Base):
     first_seen = Column(DateTime(timezone=True), default=func.now())
     last_seen = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now())
     total_events = Column(Integer, default=0)
+
+class WorkerHeartbeat(Base):
+    __tablename__ = "worker_heartbeats"
+    
+    worker_id = Column(String, primary_key=True)
+    worker_type = Column(String, index=True, nullable=False)
+    status = Column(String, default="starting", nullable=False)
+    started_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    last_heartbeat_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    current_job_id = Column(String, nullable=True)
+    hostname_hash = Column(String, nullable=False)
+    version = Column(String, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False)
+

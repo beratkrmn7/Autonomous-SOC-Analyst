@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     job_retry_max_seconds: int = Field(default=60, ge=1)
     job_processing_lease_seconds: int = Field(default=300, ge=1)
     
+    worker_heartbeat_interval_seconds: int = Field(default=15, ge=1)
+    worker_heartbeat_stale_seconds: int = Field(default=60, ge=1)
+    
     @property
     def safe_database_url(self) -> str:
         """Returns the database URL with the password redacted for safe logging."""
