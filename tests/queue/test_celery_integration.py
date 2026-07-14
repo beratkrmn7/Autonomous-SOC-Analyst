@@ -13,13 +13,24 @@ from agent.queue.celery_app import celery_app
 
 @pytest.fixture
 def isolated_db():
+    import tempfile
     settings = get_settings()
-    # Use in-memory SQLite for tests
-    settings.database_url = "sqlite:///:memory:"
+    
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
+        db_path = tf.name
+        
+    settings.database_url = f"sqlite:///{db_path}"
     engine = create_engine_factory(settings)
     Base.metadata.create_all(engine)
     session_factory = create_session_factory(engine)
-    return session_factory
+    
+    yield session_factory
+    
+    engine.dispose()
+    try:
+        os.remove(db_path)
+    except PermissionError:
+        pass
 
 @pytest.fixture
 def staging_store(tmp_path):
@@ -41,6 +52,9 @@ def test_celery_redis_integration_pipeline(background_service, isolated_db, stag
     monkeypatch.setattr(analysis_worker, "default_session_factory", isolated_db)
     
     settings = get_settings()
+    settings.llm_enabled = False
+    settings.staging_dir = str(staging_store.staging_dir)
+
     try:
         r = redis.Redis.from_url(settings.celery_broker_url)
         r.ping()
