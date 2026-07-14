@@ -256,7 +256,6 @@ class ApiKeyAuthenticationService:
                     updated = self.uow.session.query(ApiCredential).filter(
                         ApiCredential.credential_id == matched.credential_id,
                         ApiCredential.status == "active",
-                        ApiCredential.version == matched.version,
                         or_(
                             ApiCredential.expires_at.is_(None),
                             ApiCredential.expires_at > now,

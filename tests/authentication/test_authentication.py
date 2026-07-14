@@ -391,6 +391,45 @@ def test_api_credential_migration_upgrades_and_downgrades(
         get_settings.cache_clear()
 
 
+def test_concurrent_valid_authentications_all_succeed(session_factory):
+    generated = generate_credential(session_factory)
+    request_count = 5
+    barrier = threading.Barrier(request_count)
+
+    def authenticate():
+        barrier.wait()
+        return ApiKeyAuthenticationService(
+            UnitOfWork(session_factory)
+        ).authenticate(generated.api_key)
+
+    with ThreadPoolExecutor(max_workers=request_count) as executor:
+        futures = [executor.submit(authenticate) for _ in range(request_count)]
+        principals = [future.result() for future in futures]
+
+    assert all(
+        isinstance(principal, AuthenticatedPrincipal)
+        for principal in principals
+    )
+    session = session_factory()
+    try:
+        stored = session.get(ApiCredential, generated.credential.credential_id)
+        assert stored is not None
+        assert stored.last_used_at is not None
+    finally:
+        session.close()
+
+    revoked = ApiKeyAuthenticationService(
+        UnitOfWork(session_factory)
+    ).revoke_credential(generated.credential.credential_id)
+    assert revoked.status == "revoked"
+
+    for _ in range(request_count):
+        with pytest.raises(AuthenticationRequiredError):
+            ApiKeyAuthenticationService(
+                UnitOfWork(session_factory)
+            ).authenticate(generated.api_key)
+
+
 def test_concurrent_revoke_and_authentication_have_safe_outcomes(
     session_factory,
 ):
