@@ -55,6 +55,9 @@ class IngestionJob(Base):
     # Background job specific fields
     attempt_count = Column(Integer, default=0)
     worker_id = Column(String, nullable=True)
+    next_retry_at = Column(DateTime(timezone=True), nullable=True)
+    lease_expires_at = Column(DateTime(timezone=True), nullable=True)
+    last_attempt_at = Column(DateTime(timezone=True), nullable=True)
     
     total_records = Column(Integer, default=0)
     parsed_records = Column(Integer, default=0)
