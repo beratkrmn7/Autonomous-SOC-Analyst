@@ -3,6 +3,7 @@ import sys
 import time
 import socket
 import logging
+from typing import Optional
 from sqlalchemy.sql import func
 from agent.api.deps import session_factory as default_session_factory
 from agent.persistence.orm_models import IngestionJob
@@ -18,10 +19,35 @@ class AnalysisWorker:
         self.worker_id = worker_id
         self.staging_store = LocalFileStagingStore(staging_dir=staging_dir)
         self.session_factory = session_factory or default_session_factory
+        
+        from agent.workers.heartbeat_service import WorkerHeartbeatService
+        self.heartbeat_service = WorkerHeartbeatService(self.session_factory)
+        self.heartbeat_service.register_startup(self.worker_id, "analysis_worker")
+        self.last_heartbeat_time = time.time()
+
+    def _maybe_heartbeat(self, status: str, current_job_id: Optional[str] = None):
+        """Update heartbeat if interval has passed."""
+        from agent.config import get_settings
+        settings = get_settings()
+        now = time.time()
+        if now - self.last_heartbeat_time >= settings.worker_heartbeat_interval_seconds:
+            try:
+                self.heartbeat_service.update_heartbeat(self.worker_id, status, current_job_id)
+            except Exception as e:
+                logger.error(f"Worker heartbeat failed safely: {e}")
+            self.last_heartbeat_time = now
+
+    def _safe_heartbeat(self, status: str, current_job_id: Optional[str] = None):
+        try:
+            self.heartbeat_service.update_heartbeat(self.worker_id, status, current_job_id)
+            self.last_heartbeat_time = time.time()
+        except Exception as e:
+            logger.error(f"Worker heartbeat failed safely: {e}")
 
     def process_job(self, job_id: str) -> str:
         """Processes a specific job by ID. Returns the resulting status ('completed', 'failed', 'retry', or 'ignored')."""
         db = self.session_factory()
+        updated = 0
         try:
             from agent.config import get_settings
             from agent.errors import RetryableJobError, PermanentJobError
@@ -49,6 +75,7 @@ class AnalysisWorker:
             if not updated:
                 return "ignored" # Someone else grabbed it or it's not queued
                 
+            self._safe_heartbeat("busy", job_id)
             logger.info(f"Worker {self.worker_id} claimed job {job_id}")
             
             job = db.query(IngestionJob).get(job_id)
@@ -173,6 +200,8 @@ class AnalysisWorker:
 
         finally:
             db.close()
+            if updated:
+                self._safe_heartbeat("idle")
 
     def run_once(self) -> bool:
         """Runs one job. Returns True if a job was processed, False if queue was empty."""
