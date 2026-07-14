@@ -64,10 +64,10 @@ def test_celery_redis_integration_pipeline(background_service, isolated_db, stag
     # Start an isolated Celery worker
     with start_worker(celery_app, perform_ping_check=False, pool="solo"):
         # Submit a deterministic offline fixture
-        stream = io.BytesIO(b"Test evidence data")
+        stream = io.BytesIO(b'{"message": "test", "source": "test"}')
         job_id, reused, status = background_service.submit_file(
             stream=stream,
-            original_filename="test.txt",
+            original_filename="test.json",
             source_name="test",
             pipeline_version="1.0.0",
             analysis_mode="analyze"
@@ -89,10 +89,12 @@ def test_celery_redis_integration_pipeline(background_service, isolated_db, stag
                 time.sleep(0.5)
             
             assert job is not None
-            assert job.status in ("completed", "failed")
+            assert job.status == "completed"
             assert job.attempt_count == 1
             
-            # Assert staged file is removed
-            assert not os.path.exists(staging_store.get_file_path(job_id))
+            # Assert staged file is removed safely without using get_file_path
+            from pathlib import Path
+            staged_path = Path(staging_store.staging_dir) / job_id
+            assert not staged_path.exists()
         finally:
             db.close()
