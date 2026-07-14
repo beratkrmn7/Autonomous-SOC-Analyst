@@ -1,3 +1,5 @@
+import datetime
+
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
 
@@ -8,8 +10,21 @@ from agent.application.staging import FileStagingStore
 from agent.persistence.orm_models import IngestionJob
 from agent.queue.dispatchers import AnalysisJobDispatcher
 from agent.errors import QueuePublishFailedError
+from agent.application.cancellation import (
+    JobCancellationService,
+    JobNotCancellableError,
+    JobNotFoundError,
+)
 
 router = APIRouter(tags=["jobs"])
+
+
+def _iso_utc(value):
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=datetime.timezone.utc)
+    return value.isoformat()
 
 @router.post("/analysis-jobs/file", status_code=202)
 async def submit_file_job(
@@ -50,6 +65,37 @@ async def submit_file_job(
         }
     )
 
+
+@router.post("/analysis-jobs/{job_id}/cancel")
+async def cancel_job(
+    job_id: str,
+    uow: UnitOfWork = Depends(get_uow),
+    staging_store: FileStagingStore = Depends(get_staging_store),
+):
+    service = JobCancellationService(uow=uow, staging_store=staging_store)
+    try:
+        result = service.cancel(job_id)
+    except JobNotFoundError:
+        return JSONResponse(status_code=404, content={"code": "job_not_found"})
+    except JobNotCancellableError as exc:
+        return JSONResponse(
+            status_code=409,
+            content={"code": "job_not_cancellable", "status": exc.status},
+        )
+
+    content = {
+        "job_id": result.job_id,
+        "status": result.status,
+        "cancel_requested_at": _iso_utc(result.cancel_requested_at),
+    }
+    if result.cancelled_at is not None:
+        content["cancelled_at"] = _iso_utc(result.cancelled_at)
+
+    return JSONResponse(
+        status_code=202 if result.status == "cancel_requested" else 200,
+        content=content,
+    )
+
 @router.get("/analysis-jobs/{job_id}")
 async def get_job_status(job_id: str, uow: UnitOfWork = Depends(get_uow)):
     with uow:
@@ -61,10 +107,13 @@ async def get_job_status(job_id: str, uow: UnitOfWork = Depends(get_uow)):
         return {
             "job_id": job.id,
             "status": job.status,
-            "queued_at": job.queued_at.isoformat() if job.queued_at else None,
-            "started_at": job.started_at.isoformat() if job.started_at else None,
-            "completed_at": job.completed_at.isoformat() if job.completed_at else None,
-            "error_code": job.error_code
+            "queued_at": _iso_utc(job.queued_at),
+            "started_at": _iso_utc(job.started_at),
+            "completed_at": _iso_utc(job.completed_at),
+            "error_code": job.error_code,
+            "cancel_requested_at": _iso_utc(job.cancel_requested_at),
+            "cancelled_at": _iso_utc(job.cancelled_at),
+            "cancel_reason_code": job.cancel_reason_code,
         }
 
 @router.get("/analysis-jobs/{job_id}/result")
@@ -75,8 +124,11 @@ async def get_job_result(job_id: str, uow: UnitOfWork = Depends(get_uow)):
         if not job:
             raise HTTPException(status_code=404, detail="Job not found")
             
-        if job.status in ("queued", "processing"):
+        if job.status in ("queued", "processing", "cancel_requested"):
             return JSONResponse(status_code=202, content={"status": job.status, "message": "Job is still processing"})
+
+        if job.status == "cancelled":
+            return {"status": "cancelled"}
             
         if job.status == "failed":
             return {

@@ -57,8 +57,8 @@ def test_worker_heartbeat_migration():
         columns = {col["name"] for col in inspector.get_columns("worker_heartbeats")}
         assert {"worker_id", "worker_type", "status", "started_at", "last_heartbeat_at", "current_job_id", "hostname_hash", "version", "created_at", "updated_at"}.issubset(columns)
         
-        # downgrade one revision
-        command.downgrade(alembic_cfg, "-1")
+        # downgrade to the revision immediately before worker heartbeats
+        command.downgrade(alembic_cfg, "554b54ed15b4")
         
         # assert table no longer exists
         inspector = inspect(engine)

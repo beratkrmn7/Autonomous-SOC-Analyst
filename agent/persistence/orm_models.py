@@ -58,6 +58,10 @@ class IngestionJob(Base):
     next_retry_at = Column(DateTime(timezone=True), nullable=True)
     lease_expires_at = Column(DateTime(timezone=True), nullable=True)
     last_attempt_at = Column(DateTime(timezone=True), nullable=True)
+    cancel_requested_at = Column(DateTime(timezone=True), nullable=True)
+    cancelled_at = Column(DateTime(timezone=True), nullable=True)
+    cancel_reason_code = Column(String, nullable=True)
+    cancel_requested_by = Column(String, nullable=True)
     
     total_records = Column(Integer, default=0)
     parsed_records = Column(Integer, default=0)

@@ -67,9 +67,9 @@ class LocalFileStagingStore:
         try:
             if staged_path.exists():
                 staged_path.unlink()
-        except Exception as e:
+        except Exception:
             import logging
-            logging.getLogger(__name__).warning(f"Failed to remove staged file {staged_path}: {e}")
+            logging.getLogger(__name__).warning("staging_cleanup_failed")
 
     def move_file(self, src_job_id: str, dest_job_id: str) -> None:
         src_path = self.staging_dir / src_job_id

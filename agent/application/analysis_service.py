@@ -1,4 +1,5 @@
 import logging
+from functools import partial
 from typing import Optional, List, Dict, Any, cast
 from agent.persistence.unit_of_work import UnitOfWork
 from agent.application.models import AnalysisResult
@@ -8,15 +9,28 @@ from agent.filtering import EventFilter
 from agent.detection.engine import DetectionEngine
 from agent.models import IncidentState
 from agent.graph import app
+from agent.application.cancellation import (
+    JobCancellationChecker,
+    JobCancellationRequested,
+)
 from sqlalchemy.sql import func
 logger = logging.getLogger(__name__)
 
 class AnalysisService:
-    def __init__(self, uow: Optional[Any] = None):
+    def __init__(
+        self,
+        uow: Optional[Any] = None,
+        cancellation_checker: Optional[JobCancellationChecker] = None,
+    ):
         self.uow = uow
+        self.cancellation_checker = cancellation_checker
         self.ingest = IngestionPipeline()
         self.filter_engine = EventFilter()
         self.detection_engine = DetectionEngine()
+
+    def _raise_if_cancelled(self, job_id: Optional[str]) -> None:
+        if job_id and self.cancellation_checker:
+            self.cancellation_checker.raise_if_cancelled(job_id)
 
     def _persist_analysis(self, result: AnalysisResult, run_triage: bool):
         from agent.persistence.mappers import DataMapper
@@ -54,8 +68,6 @@ class AnalysisService:
                 # Update existing job
                 job = uow.session.query(IngestionJob).get(job_id)
                 if job and result.ingestion_result:
-                    job.status = "completed"
-                    job.completed_at = func.now()
                     job.total_records = result.ingestion_result.metrics.total_records
                     job.parsed_records = result.ingestion_result.metrics.parsed_records
                     job.failed_records = result.ingestion_result.metrics.failed_records
@@ -108,6 +120,7 @@ class AnalysisService:
             uow.session.flush() # Flush to get incident IDs ready for triage references
             
             # 5, 6, 7. Triage Run, Evidence, Report
+            self._raise_if_cancelled(result.job_id)
             if run_triage:
                 for inc_state in result.incidents:
                     incident_id = inc_state.get("incident_id")
@@ -185,7 +198,22 @@ class AnalysisService:
                             )
                             uow.reports.add(report)
                             
-            # 8. Commit (happens on context exit)
+            # 8. Complete only if the database still grants this processing lease.
+            # This conditional update is the final cancellation-vs-completion arbiter.
+            if result.job_id:
+                completed = uow.session.query(IngestionJob).filter(
+                    IngestionJob.id == result.job_id,
+                    IngestionJob.status == "processing",
+                ).update({
+                    "status": "completed",
+                    "completed_at": func.now(),
+                    "lease_expires_at": None,
+                    "next_retry_at": None,
+                }, synchronize_session=False)
+                if completed != 1:
+                    raise JobCancellationRequested(result.job_id)
+            # Commit happens on context exit. Any cancellation exception rolls
+            # back all incidents, triage runs, evidence, and reports above.
 
     def analyze_file(self, file_path: str, *, run_triage: bool = True, source_name: Optional[str] = None, file_sha256: Optional[str] = None, idempotency_key: Optional[str] = None, pipeline_version: Optional[str] = None, analysis_mode: Optional[str] = None, job_id: Optional[str] = None) -> AnalysisResult:
         # 1. Check Idempotency if key is provided and job_id is NOT provided
@@ -346,7 +374,9 @@ class AnalysisService:
                         raise DuplicateAnalysisError(status="processing")
 
         # 2. Ingestion
+        self._raise_if_cancelled(job_id)
         ingest_result = self.ingest.ingest_file(file_path)
+        self._raise_if_cancelled(job_id)
         
         # 3. Process Events
         res = self._process_events(
@@ -377,6 +407,7 @@ class AnalysisService:
         
         # 3. Detection
         det_result = self.detection_engine.analyze(filter_result.candidates, filter_result.context)
+        self._raise_if_cancelled(job_id)
         
         event_map = {e.event_id: e for e in events if e.event_id}
         signal_map = {s.signal_id: s for s in det_result.signals}
@@ -402,11 +433,19 @@ class AnalysisService:
         # 5. Graph Invocation (Triage)
         for inc in det_result.incidents:
             initial_state = self._build_initial_state(inc, event_map, signal_map)
+            if job_id and self.cancellation_checker:
+                initial_state["cancellation_check"] = partial(
+                    self._raise_if_cancelled, job_id
+                )
             
             if run_triage:
                 try:
+                    self._raise_if_cancelled(job_id)
                     final_state = app.invoke(initial_state)
+                    self._raise_if_cancelled(job_id)
                     result.incidents.append(final_state)  # type: ignore
+                except JobCancellationRequested:
+                    raise
                 except Exception as e:
                     logger.error("Error during triage", exc_info=False, extra={"error": type(e).__name__, "error_msg": str(e), "incident_id": initial_state.get("incident_id")})
                     result.incidents.append(initial_state)
@@ -416,7 +455,10 @@ class AnalysisService:
         # 6. Persistence
         if self.uow:
             try:
+                self._raise_if_cancelled(job_id)
                 self._persist_analysis(result, run_triage)
+            except JobCancellationRequested:
+                raise
             except Exception as e:
                 # If we fail during persistence, mark the job as failed
                 logger.error("Persistence failed", exc_info=False, extra={"error": type(e).__name__, "error_msg": str(e), "job_id": getattr(result, "job_id", None)})
@@ -493,5 +535,5 @@ class AnalysisService:
             "search_history": [],
             "tool_results": [],
             "errors": [],
-            "detection_engine_executed": True
+            "detection_engine_executed": True,
         }

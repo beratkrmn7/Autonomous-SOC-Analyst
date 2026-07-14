@@ -1,5 +1,5 @@
 
-from typing import List, Optional, Literal, Annotated, Dict, Any
+from typing import List, Optional, Literal, Annotated, Dict, Any, Callable
 from typing_extensions import TypedDict, NotRequired
 from pydantic import BaseModel, Field
 from langchain_core.messages import AnyMessage
@@ -131,3 +131,4 @@ class IncidentState(TypedDict, total=False):
     entities: NotRequired[dict]
     final_report: NotRequired[str]
     detection_engine_executed: NotRequired[bool]
+    cancellation_check: NotRequired[Callable[[], None]]

@@ -10,6 +10,11 @@ from agent.persistence.orm_models import IngestionJob
 from agent.application.analysis_service import AnalysisService
 from agent.persistence.unit_of_work import UnitOfWork
 from agent.application.staging import LocalFileStagingStore
+from agent.application.cancellation import (
+    DatabaseJobCancellationChecker,
+    JobCancellationRequested,
+    JobCancellationService,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("worker")
@@ -19,6 +24,7 @@ class AnalysisWorker:
         self.worker_id = worker_id
         self.staging_store = LocalFileStagingStore(staging_dir=staging_dir)
         self.session_factory = session_factory or default_session_factory
+        self.cancellation_checker = DatabaseJobCancellationChecker(self.session_factory)
         
         from agent.workers.heartbeat_service import WorkerHeartbeatService
         self.heartbeat_service = WorkerHeartbeatService(self.session_factory)
@@ -44,8 +50,17 @@ class AnalysisWorker:
         except Exception as e:
             logger.error(f"Worker heartbeat failed safely: {e}")
 
+    def _finalize_cancellation(self, job_id: str) -> str:
+        service = JobCancellationService(
+            uow=UnitOfWork(session_factory=self.session_factory),
+            staging_store=self.staging_store,
+        )
+        service.finalize(job_id)
+        logger.info(f"Worker {self.worker_id} finalized cancellation for job {job_id}")
+        return "cancelled"
+
     def process_job(self, job_id: str) -> str:
-        """Processes a specific job by ID. Returns the resulting status ('completed', 'failed', 'retry', or 'ignored')."""
+        """Process one database-authorized job, including cooperative cancellation."""
         db = self.session_factory()
         updated = 0
         try:
@@ -56,6 +71,15 @@ class AnalysisWorker:
             
             now = datetime.datetime.now(datetime.timezone.utc)
             lease_expires = now + datetime.timedelta(seconds=settings.job_processing_lease_seconds)
+
+            current_status = db.query(IngestionJob.status).filter(
+                IngestionJob.id == job_id
+            ).scalar()
+            if current_status == "cancel_requested":
+                db.rollback()
+                return self._finalize_cancellation(job_id)
+            if current_status != "queued":
+                return "ignored"
             
             # Atomic check-and-set
             updated = db.query(IngestionJob).filter(
@@ -87,6 +111,7 @@ class AnalysisWorker:
             job_status = "completed"
             
             try:
+                self.cancellation_checker.raise_if_cancelled(job_id)
                 try:
                     file_path = self.staging_store.get_file_path(job_id)
                 except Exception as e:
@@ -95,7 +120,10 @@ class AnalysisWorker:
                 
                 # Use a fresh UnitOfWork for the service
                 uow = UnitOfWork(session_factory=self.session_factory)
-                service = AnalysisService(uow=uow)
+                service = AnalysisService(
+                    uow=uow,
+                    cancellation_checker=self.cancellation_checker,
+                )
                 
                 logger.info(f"Worker {self.worker_id} starting analysis for job {job_id}")
                 
@@ -122,6 +150,9 @@ class AnalysisWorker:
                 logger.info(f"Worker {self.worker_id} cleaned up staging for job {job_id}")
                 return "completed"
 
+            except JobCancellationRequested:
+                db.rollback()
+                return self._finalize_cancellation(job_id)
             except Exception as e:
                 db.rollback()
                 failed_job = db.query(IngestionJob).get(job_id)
@@ -232,9 +263,9 @@ class AnalysisWorker:
             import datetime
             settings = get_settings()
             
-            # Find stale processing jobs
+            # Find stale processing jobs and abandoned cancellation requests.
             stale_jobs = db.query(IngestionJob).filter(
-                IngestionJob.status == "processing",
+                IngestionJob.status.in_(("processing", "cancel_requested")),
                 IngestionJob.lease_expires_at.is_not(None),
                 IngestionJob.lease_expires_at <= func.now()
             ).all()
@@ -242,6 +273,11 @@ class AnalysisWorker:
             count = 0
             for job in stale_jobs:
                 logger.warning(f"Worker {self.worker_id} recovering stale job {job.id}")
+
+                if job.status == "cancel_requested":
+                    self._finalize_cancellation(job.id)
+                    count += 1
+                    continue
                 
                 if job.attempt_count < settings.job_max_attempts:
                     # Requeue

@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 
 from agent.config import get_settings
 from agent.errors import ConfigurationError
+from agent.application.cancellation import JobCancellationRequested
 from agent.triage.runner import TriageRunner
 from agent.triage.groq_provider import GroqTriageProvider
 from agent.triage.cache import InMemoryTriageCache
@@ -246,9 +247,15 @@ def triage_node(state: IncidentState) -> dict:
             "errors": ["invalid_incident_state"]
         }
 
+    cancellation_check = state.get("cancellation_check")
+    if cancellation_check:
+        cancellation_check()
+
     try:
         runner = get_triage_runner()
         result = runner.run(state, context)
+        if cancellation_check:
+            cancellation_check()
         
         triage_dict = {
             "iteration_count": result.metrics.iteration_count,
@@ -278,6 +285,8 @@ def triage_node(state: IncidentState) -> dict:
             
         return triage_dict
         
+    except JobCancellationRequested:
+        raise
     except Exception as e:
         logger.error(f"--- TRIAGE AGENT: Fatal Error -> {e} ---")
         return {
