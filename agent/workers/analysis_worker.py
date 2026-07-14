@@ -19,22 +19,10 @@ class AnalysisWorker:
         self.staging_store = LocalFileStagingStore(staging_dir=staging_dir)
         self.session_factory = session_factory or default_session_factory
 
-    def run_once(self) -> bool:
-        """Runs one job. Returns True if a job was processed, False if queue was empty."""
+    def process_job(self, job_id: str) -> bool:
+        """Processes a specific job by ID. Returns True if successfully claimed and processed, False otherwise."""
         db = self.session_factory()
         try:
-            # 1. Claim a job
-            # Since sqlite doesn't support SELECT FOR UPDATE SKIP LOCKED,
-            # we use a simple update to 'processing' for the oldest 'queued' job.
-            # In a distributed environment, this needs better concurrency control.
-            
-            job = db.query(IngestionJob).filter(IngestionJob.status == "queued").order_by(IngestionJob.queued_at.asc()).first()
-            
-            if not job:
-                return False
-                
-            job_id = job.id
-            
             # Atomic check-and-set
             updated = db.query(IngestionJob).filter(
                 IngestionJob.id == job_id,
@@ -48,10 +36,14 @@ class AnalysisWorker:
             db.commit()
             
             if not updated:
-                return False # Someone else grabbed it
+                return False # Someone else grabbed it or it's not queued
                 
             logger.info(f"Worker {self.worker_id} claimed job {job_id}")
             
+            job = db.query(IngestionJob).get(job_id)
+            if not job:
+                return False
+
             # 2. Process the job
             file_path = None
             try:
@@ -63,9 +55,6 @@ class AnalysisWorker:
                 
                 logger.info(f"Worker {self.worker_id} starting analysis for job {job_id}")
                 
-                # analyze_file will update the job to completed/failed internally if uow is passed
-                # However, it expects a file_path and might do idempotency checks which we bypass here
-                # since we've already claimed the job. Actually, analyze_file just does analysis and persistence.
                 service.analyze_file(
                     file_path=file_path,
                     run_triage=True, # Background job runs full triage
@@ -76,14 +65,6 @@ class AnalysisWorker:
                     analysis_mode=job.analysis_mode,
                     job_id=job.id
                 )
-                
-                # Note: AnalysisService.analyze_file will try to create a new job if job_id is not passed in result,
-                # but we want it to update OUR job. We should pass the job_id into analyze_file or modify how we call it.
-                # Since analyze_file doesn't accept job_id as a parameter directly, but we can't change it too much,
-                # wait... AnalysisService.analyze_file checks if job_id exists on idempotency.
-                # But here, we already have a job in the DB!
-                # Let's check AnalysisService.analyze_file signature... it doesn't take job_id! 
-                # Wait, if we use idempotency_key, it might find it.
             except Exception as e:
                 logger.error(f"Worker {self.worker_id} failed job {job_id}: {e}")
                 
@@ -103,6 +84,23 @@ class AnalysisWorker:
 
         finally:
             db.close()
+
+    def run_once(self) -> bool:
+        """Runs one job. Returns True if a job was processed, False if queue was empty."""
+        db = self.session_factory()
+        try:
+            # 1. Find a job
+            job = db.query(IngestionJob).filter(IngestionJob.status == "queued").order_by(IngestionJob.queued_at.asc()).first()
+            
+            if not job:
+                return False
+                
+            job_id = job.id
+            
+        finally:
+            db.close()
+
+        return self.process_job(job_id)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

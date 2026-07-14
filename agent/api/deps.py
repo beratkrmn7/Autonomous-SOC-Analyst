@@ -12,4 +12,10 @@ def get_uow() -> UnitOfWork:
 
 def get_staging_store():
     from agent.application.staging import LocalFileStagingStore
-    return LocalFileStagingStore(staging_dir="/tmp/agent_staging")
+    return LocalFileStagingStore(staging_dir=settings.staging_dir)
+
+def get_dispatcher():
+    from agent.queue.dispatchers import DatabasePollingDispatcher, CeleryAnalysisJobDispatcher
+    if settings.task_queue_backend == "celery":
+        return CeleryAnalysisJobDispatcher()
+    return DatabasePollingDispatcher()

@@ -7,10 +7,35 @@ from agent.persistence.unit_of_work import UnitOfWork
 from agent.persistence.orm_models import IngestionJob
 from agent.application.staging import FileStagingStore
 
+from agent.queue.dispatchers import AnalysisJobDispatcher
+from agent.errors import QueuePublishFailedError
+
 class BackgroundAnalysisService:
-    def __init__(self, uow: UnitOfWork, staging_store: FileStagingStore):
+    def __init__(self, uow: UnitOfWork, staging_store: FileStagingStore, dispatcher: AnalysisJobDispatcher):
         self.uow = uow
         self.staging_store = staging_store
+        self.dispatcher = dispatcher
+
+    def _dispatch_and_return(self, job_id: str, reused: bool) -> Tuple[str, bool, str]:
+        """Dispatches the job to the queue and handles publication failure."""
+        try:
+            self.dispatcher.enqueue(job_id)
+        except Exception:
+            # Handle publication failure
+            with self.uow:
+                assert self.uow.session is not None
+                failed_job = self.uow.session.query(IngestionJob).get(job_id)
+                if failed_job:
+                    failed_job.status = "failed"  # type: ignore
+                    failed_job.error_code = "queue_publish_failed"  # type: ignore
+                    self.uow.session.commit()
+            
+            # Remove staging file
+            self.staging_store.remove_file(job_id)
+            
+            raise QueuePublishFailedError(job_id=job_id)
+
+        return job_id, reused, "queued"
 
     def submit_file(
         self,
@@ -27,6 +52,7 @@ class BackgroundAnalysisService:
         import hashlib
         job_id = str(uuid.uuid4())
         reused = False
+        needs_dispatch = False
 
         with self.uow:
             assert self.uow.session is not None
@@ -59,31 +85,38 @@ class BackgroundAnalysisService:
                     job.reused_count += 1  # type: ignore
                     job.last_requested_at = func.now()  # type: ignore
                     self.uow.session.commit()
-                    return str(job.id), True, "queued"
+                    job_id = str(job.id)
+                    reused = True
+                    needs_dispatch = True
 
-            # 4. Create a new IngestionJob
-            job = IngestionJob(
-                id=job_id,
-                idempotency_key=idempotency_key,
-                source_name=source_name,
-                original_filename=original_filename,
-                file_sha256=file_sha256,
-                pipeline_version=pipeline_version,
-                analysis_mode=analysis_mode,
-                status="queued",
-                queued_at=func.now()
-            )
-            self.uow.ingestion_jobs.add(job)
-            
-            try:
-                self.uow.session.commit()
-            except IntegrityError:
-                self.uow.session.rollback()
-                # If there's an integrity error, it might be due to a concurrent request with the same idempotency key
-                existing_job = self.uow.session.query(IngestionJob).filter_by(idempotency_key=idempotency_key).first()
-                if existing_job:
-                    self.staging_store.remove_file(job_id) # Clean up the newly staged file
-                    return str(existing_job.id), True, str(existing_job.status)
-                raise # Re-raise if it's not handled
+            if not needs_dispatch:
+                # 4. Create a new IngestionJob
+                job = IngestionJob(
+                    id=job_id,
+                    idempotency_key=idempotency_key,
+                    source_name=source_name,
+                    original_filename=original_filename,
+                    file_sha256=file_sha256,
+                    pipeline_version=pipeline_version,
+                    analysis_mode=analysis_mode,
+                    status="queued",
+                    queued_at=func.now()
+                )
+                self.uow.ingestion_jobs.add(job)
+                
+                try:
+                    self.uow.session.commit()
+                    needs_dispatch = True
+                except IntegrityError:
+                    self.uow.session.rollback()
+                    # If there's an integrity error, it might be due to a concurrent request with the same idempotency key
+                    existing_job = self.uow.session.query(IngestionJob).filter_by(idempotency_key=idempotency_key).first()
+                    if existing_job:
+                        self.staging_store.remove_file(job_id) # Clean up the newly staged file
+                        return str(existing_job.id), True, str(existing_job.status)
+                    raise # Re-raise if it's not handled
+
+        if needs_dispatch:
+            return self._dispatch_and_return(job_id, reused)
 
         return job_id, reused, "queued"

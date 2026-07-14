@@ -39,3 +39,10 @@ class InvalidEncodingError(IngestionError):
 
 class MalformedRecordError(IngestionError):
     pass
+
+class QueuePublishFailedError(Exception):
+    """Raised when publishing a job to the task queue broker fails."""
+    def __init__(self, job_id: str, error_code: str = "queue_publish_failed"):
+        self.job_id = job_id
+        self.error_code = error_code
+        super().__init__(f"Failed to publish job {job_id} to queue broker.")

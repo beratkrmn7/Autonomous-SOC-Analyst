@@ -47,6 +47,12 @@ class Settings(BaseSettings):
     database_max_overflow: int = Field(default=10, ge=0)
     database_pool_timeout: int = Field(default=30, ge=1)
     
+    # Phase 5B: Task Queue Settings
+    task_queue_backend: Literal["database", "celery"] = "database"
+    celery_broker_url: str = "redis://localhost:6379/0"
+    celery_queue_name: str = "soc-analysis"
+    staging_dir: str = "/tmp/agent_staging"
+    
     @property
     def safe_database_url(self) -> str:
         """Returns the database URL with the password redacted for safe logging."""
@@ -64,6 +70,23 @@ class Settings(BaseSettings):
             except Exception:
                 return "***redacted***"
         return self.database_url
+
+    @property
+    def safe_celery_broker_url(self) -> str:
+        """Returns the Celery broker URL with the password redacted for safe logging."""
+        if not self.celery_broker_url:
+            return ""
+        if "@" in self.celery_broker_url:
+            try:
+                scheme_user, rest = self.celery_broker_url.split(":", 1)
+                if "//" in scheme_user:
+                    scheme, user = scheme_user.split("//", 1)
+                    if "@" in rest:
+                        password, host_db = rest.split("@", 1)
+                        return f"{scheme}//{user}:***@{host_db}"
+            except Exception:
+                return "***redacted***"
+        return self.celery_broker_url
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

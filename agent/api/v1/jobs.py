@@ -1,11 +1,13 @@
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
 
-from agent.api.deps import get_uow, get_staging_store
+from agent.api.deps import get_uow, get_staging_store, get_dispatcher
 from agent.application.background_service import BackgroundAnalysisService
 from agent.persistence.unit_of_work import UnitOfWork
 from agent.application.staging import FileStagingStore
 from agent.persistence.orm_models import IngestionJob
+from agent.queue.dispatchers import AnalysisJobDispatcher
+from agent.errors import QueuePublishFailedError
 
 router = APIRouter(tags=["jobs"])
 
@@ -13,21 +15,31 @@ router = APIRouter(tags=["jobs"])
 async def submit_file_job(
     file: UploadFile = File(...),
     uow: UnitOfWork = Depends(get_uow),
-    staging_store: FileStagingStore = Depends(get_staging_store)
+    staging_store: FileStagingStore = Depends(get_staging_store),
+    dispatcher: AnalysisJobDispatcher = Depends(get_dispatcher)
 ):
     from agent.config import get_settings
     settings = get_settings()
     
-    service = BackgroundAnalysisService(uow=uow, staging_store=staging_store)
+    service = BackgroundAnalysisService(uow=uow, staging_store=staging_store, dispatcher=dispatcher)
     
-    # We read from file.file which is a SpooledTemporaryFile (binary stream)
-    job_id, reused, status = service.submit_file(
-        stream=file.file,
-        original_filename=file.filename or "upload.bin",
-        source_name="api",
-        pipeline_version=settings.pipeline_version,
-        analysis_mode="analyze"
-    )
+    try:
+        # We read from file.file which is a SpooledTemporaryFile (binary stream)
+        job_id, reused, status = service.submit_file(
+            stream=file.file,
+            original_filename=file.filename or "upload.bin",
+            source_name="api",
+            pipeline_version=settings.pipeline_version,
+            analysis_mode="analyze"
+        )
+    except QueuePublishFailedError as e:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "job_id": e.job_id,
+                "error_code": e.error_code
+            }
+        )
     
     return JSONResponse(
         status_code=202,
