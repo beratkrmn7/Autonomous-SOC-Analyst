@@ -1,10 +1,13 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import SecretStr, Field, model_validator
-from agent.ingestion.limits import IngestionLimits
-from typing import Literal, Optional
 from functools import lru_cache
+from ipaddress import ip_address
+import re
+from typing import Literal, Optional
 from urllib.parse import urlsplit
 
+from pydantic import Field, SecretStr, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from agent.ingestion.limits import IngestionLimits
 from agent.security.authorization import Role
 
 
@@ -19,6 +22,12 @@ OIDC_ASYMMETRIC_ALGORITHMS = frozenset({
     "ES384",
     "ES512",
 })
+TRUSTED_HOST_PATTERN = re.compile(
+    r"^(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*"
+    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+)
+DEFAULT_MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+DEFAULT_MAX_REQUEST_BODY_BYTES = 52 * 1024 * 1024
 
 
 def _validate_oidc_url(value: str, *, require_https: bool, field: str) -> str:
@@ -35,9 +44,65 @@ def _validate_oidc_url(value: str, *, require_https: bool, field: str) -> str:
         raise ValueError(f"{field}_invalid")
     return normalized
 
+
+def _normalize_trusted_host(value: str) -> str:
+    normalized = value.strip().lower()
+    if normalized == "*":
+        return normalized
+    try:
+        return str(ip_address(normalized))
+    except ValueError:
+        pass
+    if (
+        len(normalized) > 253
+        or not TRUSTED_HOST_PATTERN.fullmatch(normalized)
+    ):
+        raise ValueError("trusted_hosts_invalid")
+    return normalized
+
+
+def _normalize_cors_origin(value: str) -> str:
+    normalized = value.strip()
+    if normalized == "*":
+        return normalized
+    parsed = urlsplit(normalized)
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in ("", "/")
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("cors_allowed_origins_invalid")
+    return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+
+
 class Settings(BaseSettings):
-    app_env: str = "development"
+    app_env: Literal["development", "test", "production"] = "development"
     log_level: str = "INFO"
+    security_headers_enabled: bool = True
+    trusted_hosts: list[str] = Field(
+        default_factory=lambda: ["localhost", "127.0.0.1", "testserver"]
+    )
+    cors_allowed_origins: list[str] = Field(default_factory=list)
+    cors_allow_credentials: bool = False
+    forwarded_headers_enabled: bool = False
+    trusted_proxy_ips: list[str] = Field(default_factory=list)
+    https_required: bool = False
+    api_docs_enabled: bool | None = None
+    max_request_body_bytes: int = Field(
+        default=DEFAULT_MAX_REQUEST_BODY_BYTES,
+        ge=1024,
+        le=1024 * 1024 * 1024,
+    )
+    max_upload_bytes: int = Field(
+        default=DEFAULT_MAX_UPLOAD_BYTES,
+        ge=1024,
+        le=1024 * 1024 * 1024,
+    )
+    hsts_max_age_seconds: int = Field(default=86400, ge=0, le=31536000)
     auth_mode: Literal["disabled", "api_key", "oidc", "hybrid"] = "disabled"
     oidc_issuer: Optional[str] = None
     oidc_audience: Optional[str] = None
@@ -115,7 +180,56 @@ class Settings(BaseSettings):
     worker_heartbeat_stale_seconds: int = Field(default=60, ge=1)
 
     @model_validator(mode="after")
-    def validate_oidc_settings(self) -> "Settings":
+    def validate_settings(self) -> "Settings":
+        if not self.trusted_hosts or len(self.trusted_hosts) > 100:
+            raise ValueError("trusted_hosts_invalid")
+        self.trusted_hosts = list(dict.fromkeys(
+            _normalize_trusted_host(host) for host in self.trusted_hosts
+        ))
+
+        if len(self.cors_allowed_origins) > 100:
+            raise ValueError("cors_allowed_origins_invalid")
+        self.cors_allowed_origins = list(dict.fromkeys(
+            _normalize_cors_origin(origin)
+            for origin in self.cors_allowed_origins
+        ))
+        if "*" in self.cors_allowed_origins and self.cors_allow_credentials:
+            raise ValueError("cors_wildcard_credentials_forbidden")
+
+        normalized_proxy_ips: list[str] = []
+        for proxy_ip in self.trusted_proxy_ips:
+            try:
+                normalized_proxy_ips.append(str(ip_address(proxy_ip.strip())))
+            except ValueError:
+                raise ValueError("trusted_proxy_ips_invalid") from None
+        self.trusted_proxy_ips = list(dict.fromkeys(normalized_proxy_ips))
+        if self.forwarded_headers_enabled and not self.trusted_proxy_ips:
+            raise ValueError("trusted_proxy_ips_required")
+
+        if self.max_request_body_bytes < self.max_upload_bytes:
+            raise ValueError("request_body_limit_below_upload_limit")
+        self.ingestion.MAX_UPLOAD_BYTES = self.max_upload_bytes
+
+        if self.api_docs_enabled is None:
+            self.api_docs_enabled = self.app_env != "production"
+
+        if self.app_env == "production":
+            if self.auth_mode == "disabled":
+                raise ValueError("production_auth_mode_required")
+            if any("*" in host for host in self.trusted_hosts):
+                raise ValueError("production_wildcard_trusted_host_forbidden")
+            if "*" in self.cors_allowed_origins:
+                raise ValueError("production_wildcard_cors_forbidden")
+            if not self.security_headers_enabled:
+                raise ValueError("production_security_headers_required")
+            if not self.https_required:
+                raise ValueError("production_https_required")
+            if (
+                self.auth_mode in ("oidc", "hybrid")
+                and not self.oidc_require_https
+            ):
+                raise ValueError("production_oidc_https_required")
+
         if self.auth_mode not in ("oidc", "hybrid"):
             return self
 
@@ -206,7 +320,11 @@ class Settings(BaseSettings):
                 return "***redacted***"
         return self.celery_broker_url
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        hide_input_in_errors=True,
+    )
 
 @lru_cache
 def get_settings() -> Settings:
