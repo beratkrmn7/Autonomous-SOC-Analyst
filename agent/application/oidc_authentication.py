@@ -13,14 +13,13 @@ from agent.security.oidc import (
     OidcProviderError,
     SigningKeyResolver,
 )
+from agent.security.oidc_roles import OidcRoleMapper
 
 logger = logging.getLogger(__name__)
 
 MAX_TOKEN_LENGTH = 16 * 1024
 MAX_SUBJECT_LENGTH = 512
 MAX_DISPLAY_NAME_LENGTH = 120
-MAX_EXTERNAL_ROLES = 100
-MAX_EXTERNAL_ROLE_LENGTH = 128
 SUPPORTED_TOKEN_TYPES = frozenset({"jwt", "at+jwt"})
 
 
@@ -34,6 +33,10 @@ class OidcJwtAuthenticationService:
     ):
         self.configuration = configuration
         self.signing_key_resolver = signing_key_resolver
+        self.role_mapper = OidcRoleMapper(
+            configuration.roles_claim,
+            configuration.role_mapping,
+        )
 
     def authenticate(self, token: str) -> AuthenticatedPrincipal:
         try:
@@ -103,7 +106,7 @@ class OidcJwtAuthenticationService:
         if token_use is not None and token_use != "access":
             raise ValueError("jwt_token_use_invalid")
 
-        roles = self._map_roles(claims)
+        roles = self.role_mapper.map_claims(claims)
         display_name = self._display_name(claims)
         return AuthenticatedPrincipal(
             subject_type="human_user",
@@ -113,31 +116,6 @@ class OidcJwtAuthenticationService:
             roles=roles,
             credential_id=None,
         )
-
-    def _map_roles(self, claims: Mapping[str, Any]) -> tuple[str, ...]:
-        external_roles_value = claims.get(self.configuration.roles_claim, [])
-        if isinstance(external_roles_value, str):
-            external_roles = [external_roles_value]
-        elif isinstance(external_roles_value, list) and all(
-            isinstance(role, str) for role in external_roles_value
-        ):
-            external_roles = external_roles_value
-        else:
-            raise ValueError("jwt_roles_invalid")
-
-        if len(external_roles) > MAX_EXTERNAL_ROLES or any(
-            not role or len(role) > MAX_EXTERNAL_ROLE_LENGTH
-            for role in external_roles
-        ):
-            raise ValueError("jwt_roles_invalid")
-
-        role_mapping = dict(self.configuration.role_mapping)
-        mapped_roles: list[str] = []
-        for external_role in external_roles:
-            internal_role = role_mapping.get(external_role)
-            if internal_role is not None and internal_role not in mapped_roles:
-                mapped_roles.append(internal_role)
-        return tuple(mapped_roles)
 
     def _display_name(self, claims: Mapping[str, Any]) -> str:
         value = claims.get(self.configuration.display_name_claim)
