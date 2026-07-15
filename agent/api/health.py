@@ -3,11 +3,16 @@ import datetime
 from fastapi import APIRouter, Depends, Response
 from sqlalchemy import text
 
-from agent.api.deps import get_optional_oidc_authentication_service, get_uow
+from agent.api.deps import (
+    get_optional_oidc_authentication_service,
+    get_rate_limit_manager,
+    get_uow,
+)
 from agent.application.oidc_authentication import OidcJwtAuthenticationService
-from agent.config import get_settings
+from agent.config import Settings, get_settings
 from agent.persistence.orm_models import WorkerHeartbeat
 from agent.persistence.unit_of_work import UnitOfWork
+from agent.security.abuse_protection import RateLimitManager
 
 router = APIRouter()
 
@@ -20,12 +25,13 @@ async def live():
 @router.get("/ready", tags=["Health"])
 async def ready(
     response: Response,
+    settings: Settings = Depends(get_settings),
+    rate_limit_manager: RateLimitManager = Depends(get_rate_limit_manager),
     uow: UnitOfWork = Depends(get_uow),
     oidc_service: OidcJwtAuthenticationService | None = Depends(
         get_optional_oidc_authentication_service
     ),
 ):
-    settings = get_settings()
     components: dict[str, str] = {
         "database": "up",
         "queue": "up",
@@ -54,6 +60,12 @@ async def ready(
             oidc_service.check_provider()
         except Exception:
             components["identity_provider"] = "down"
+            status = "not_ready"
+
+    if settings.rate_limiting_enabled:
+        components["rate_limiter"] = "up"
+        if not rate_limit_manager.check_health():
+            components["rate_limiter"] = "down"
             status = "not_ready"
 
     # 2. Check Celery/Redis if enabled
