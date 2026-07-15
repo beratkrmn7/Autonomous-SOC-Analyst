@@ -11,8 +11,6 @@ from agent.persistence.unit_of_work import UnitOfWork
 logger = logging.getLogger(__name__)
 
 USER_REQUESTED = "user_requested"
-API_CLIENT = "api_client"
-ANONYMOUS_API_CLIENT = "anonymous_api_client"
 
 
 def _as_datetime(value: object) -> datetime.datetime | None:
@@ -113,7 +111,13 @@ class JobCancellationService:
         except Exception:
             logger.warning("staging_cleanup_failed")
 
-    def cancel(self, job_id: str) -> JobCancellationResult:
+    def cancel(
+        self,
+        job_id: str,
+        *,
+        actor_type: str = "system",
+        actor_id: str = "cancellation_service",
+    ) -> JobCancellationResult:
         now = datetime.datetime.now(datetime.timezone.utc)
         cleanup_staging = False
 
@@ -129,7 +133,7 @@ class JobCancellationService:
                 "cancel_requested_at": now,
                 "cancelled_at": now,
                 "cancel_reason_code": USER_REQUESTED,
-                "cancel_requested_by": API_CLIENT,
+                "cancel_requested_by": actor_id,
                 "worker_id": None,
                 "next_retry_at": None,
                 "lease_expires_at": None,
@@ -140,8 +144,8 @@ class JobCancellationService:
                     session,
                     job_id=job_id,
                     event_type="job_cancellation_requested",
-                    actor_type=API_CLIENT,
-                    actor_id=ANONYMOUS_API_CLIENT,
+                    actor_type=actor_type,
+                    actor_id=actor_id,
                     timestamp=now,
                 )
                 self._add_audit_event(
@@ -164,7 +168,7 @@ class JobCancellationService:
                     "status": "cancel_requested",
                     "cancel_requested_at": now,
                     "cancel_reason_code": USER_REQUESTED,
-                    "cancel_requested_by": API_CLIENT,
+                    "cancel_requested_by": actor_id,
                 }, synchronize_session=False)
 
                 if processing_update:
@@ -172,8 +176,8 @@ class JobCancellationService:
                         session,
                         job_id=job_id,
                         event_type="job_cancellation_requested",
-                        actor_type=API_CLIENT,
-                        actor_id=ANONYMOUS_API_CLIENT,
+                        actor_type=actor_type,
+                        actor_id=actor_id,
                         timestamp=now,
                     )
                     session.commit()

@@ -14,6 +14,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from agent.persistence.database import Base
+from agent.security.authorization import Role
 
 ingestion_job_events = Table(
     "ingestion_job_events",
@@ -44,6 +45,10 @@ class ApiCredential(Base):
             "status IN ('active', 'revoked', 'expired')",
             name="ck_api_credentials_status",
         ),
+        CheckConstraint(
+            "role IN ('viewer', 'analyst', 'service', 'admin')",
+            name="ck_api_credentials_role",
+        ),
     )
 
     credential_id = Column(String(45), primary_key=True)
@@ -51,6 +56,13 @@ class ApiCredential(Base):
     key_prefix = Column(String(32), nullable=False, index=True)
     key_hash = Column(String(64), nullable=False, unique=True)
     status = Column(String(16), nullable=False, default="active", index=True)
+    role = Column(
+        String(16),
+        nullable=False,
+        default=Role.SERVICE.value,
+        server_default=Role.SERVICE.value,
+        index=True,
+    )
     created_at = Column(DateTime(timezone=True), nullable=False, default=func.now())
     expires_at = Column(DateTime(timezone=True), nullable=True)
     last_used_at = Column(DateTime(timezone=True), nullable=True)

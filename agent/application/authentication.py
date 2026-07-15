@@ -13,6 +13,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from agent.persistence.orm_models import ApiCredential, AuditEvent
 from agent.persistence.unit_of_work import UnitOfWork
+from agent.security.authorization import Role
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +21,7 @@ AUTHENTICATION_ERROR = {
     "code": "authentication_required",
     "message": "Valid authentication credentials are required.",
 }
-DEFAULT_SERVICE_ROLE = "service"
+DEFAULT_SERVICE_ROLE = Role.SERVICE.value
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,7 @@ class CredentialView:
     name: str
     key_prefix: str
     status: str
+    role: str
     created_at: datetime.datetime
     expires_at: datetime.datetime | None
     last_used_at: datetime.datetime | None
@@ -68,7 +70,7 @@ def local_development_principal() -> AuthenticatedPrincipal:
         subject_id="local-development",
         display_name="Local development (authentication disabled)",
         authentication_method="disabled",
-        roles=(DEFAULT_SERVICE_ROLE,),
+        roles=(Role.ADMIN.value,),
         credential_id=None,
     )
 
@@ -89,6 +91,7 @@ def _credential_view(credential: ApiCredential) -> CredentialView:
         name=str(credential.name),
         key_prefix=str(credential.key_prefix),
         status=str(credential.status),
+        role=str(credential.role),
         created_at=cast(datetime.datetime, credential.created_at),
         expires_at=cast(datetime.datetime | None, credential.expires_at),
         last_used_at=cast(datetime.datetime | None, credential.last_used_at),
@@ -153,6 +156,7 @@ class ApiKeyAuthenticationService:
         name: str,
         description: str | None = None,
         expires_at: datetime.datetime | None = None,
+        role: Role | str = Role.SERVICE,
         created_by_type: str = "admin_cli",
         created_by_id: str = "local_administrator",
     ) -> GeneratedCredential:
@@ -163,6 +167,10 @@ class ApiKeyAuthenticationService:
             raise ValueError("credential_description_invalid")
         if expires_at is not None:
             expires_at = _utc(expires_at)
+        try:
+            persisted_role = Role(role).value
+        except ValueError:
+            raise ValueError("credential_role_invalid") from None
 
         now = datetime.datetime.now(datetime.timezone.utc)
         credential_id = f"cred_{uuid.uuid4().hex}"
@@ -182,6 +190,7 @@ class ApiKeyAuthenticationService:
                 key_prefix=key_prefix,
                 key_hash=hash_api_key(api_key),
                 status="active",
+                role=persisted_role,
                 created_at=now,
                 expires_at=expires_at,
                 last_used_at=None,
@@ -199,7 +208,11 @@ class ApiKeyAuthenticationService:
                 actor_type=created_by_type,
                 actor_id=created_by_id,
                 timestamp=now,
-                details={"name": name, "key_prefix": key_prefix},
+                details={
+                    "name": name,
+                    "key_prefix": key_prefix,
+                    "role": persisted_role,
+                },
             )
             view = _credential_view(credential)
         return GeneratedCredential(credential=view, api_key=api_key)
@@ -238,6 +251,8 @@ class ApiKeyAuthenticationService:
                     failure_category = "credential_expired"
                 elif str(matched.status) != "active":
                     failure_category = "authentication_failed"
+                elif str(matched.role) not in {role.value for role in Role}:
+                    failure_category = "authentication_failed"
                 elif matched.expires_at is not None and _utc(
                     cast(datetime.datetime, matched.expires_at)
                 ) <= now:
@@ -270,7 +285,7 @@ class ApiKeyAuthenticationService:
                             subject_id=str(matched.credential_id),
                             display_name=str(matched.name),
                             authentication_method="api_key",
-                            roles=(DEFAULT_SERVICE_ROLE,),
+                            roles=(Role(str(matched.role)).value,),
                             credential_id=str(matched.credential_id),
                         )
                     else:

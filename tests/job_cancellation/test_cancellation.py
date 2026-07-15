@@ -158,7 +158,7 @@ def test_queued_job_cancellation_returns_cancelled(client, session_factory, stag
     assert response.json()["cancelled_at"]
     job = get_job(session_factory, job_id)
     assert job.cancel_reason_code == "user_requested"
-    assert job.cancel_requested_by == "api_client"
+    assert job.cancel_requested_by == "local-development"
 
 
 def test_queued_cancellation_removes_staged_file(client, session_factory, staging_store):

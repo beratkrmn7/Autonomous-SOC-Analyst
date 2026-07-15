@@ -3,7 +3,13 @@ import datetime
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
 
-from agent.api.deps import get_uow, get_staging_store, get_dispatcher
+from agent.api.deps import (
+    get_dispatcher,
+    get_staging_store,
+    get_uow,
+    require_permission,
+)
+from agent.application.authentication import AuthenticatedPrincipal
 from agent.application.background_service import BackgroundAnalysisService
 from agent.persistence.unit_of_work import UnitOfWork
 from agent.application.staging import FileStagingStore
@@ -15,6 +21,7 @@ from agent.application.cancellation import (
     JobNotCancellableError,
     JobNotFoundError,
 )
+from agent.security.authorization import Permission
 
 router = APIRouter(tags=["jobs"])
 
@@ -31,7 +38,10 @@ async def submit_file_job(
     file: UploadFile = File(...),
     uow: UnitOfWork = Depends(get_uow),
     staging_store: FileStagingStore = Depends(get_staging_store),
-    dispatcher: AnalysisJobDispatcher = Depends(get_dispatcher)
+    dispatcher: AnalysisJobDispatcher = Depends(get_dispatcher),
+    _principal: AuthenticatedPrincipal = Depends(
+        require_permission(Permission.JOB_SUBMIT)
+    ),
 ):
     from agent.config import get_settings
     settings = get_settings()
@@ -71,10 +81,17 @@ async def cancel_job(
     job_id: str,
     uow: UnitOfWork = Depends(get_uow),
     staging_store: FileStagingStore = Depends(get_staging_store),
+    principal: AuthenticatedPrincipal = Depends(
+        require_permission(Permission.JOB_CANCEL)
+    ),
 ):
     service = JobCancellationService(uow=uow, staging_store=staging_store)
     try:
-        result = service.cancel(job_id)
+        result = service.cancel(
+            job_id,
+            actor_type=principal.subject_type,
+            actor_id=principal.subject_id,
+        )
     except JobNotFoundError:
         return JSONResponse(status_code=404, content={"code": "job_not_found"})
     except JobNotCancellableError as exc:
@@ -97,7 +114,13 @@ async def cancel_job(
     )
 
 @router.get("/analysis-jobs/{job_id}")
-async def get_job_status(job_id: str, uow: UnitOfWork = Depends(get_uow)):
+async def get_job_status(
+    job_id: str,
+    uow: UnitOfWork = Depends(get_uow),
+    _principal: AuthenticatedPrincipal = Depends(
+        require_permission(Permission.JOB_READ)
+    ),
+):
     with uow:
         assert uow.session is not None
         job = uow.session.query(IngestionJob).get(job_id)
@@ -117,7 +140,13 @@ async def get_job_status(job_id: str, uow: UnitOfWork = Depends(get_uow)):
         }
 
 @router.get("/analysis-jobs/{job_id}/result")
-async def get_job_result(job_id: str, uow: UnitOfWork = Depends(get_uow)):
+async def get_job_result(
+    job_id: str,
+    uow: UnitOfWork = Depends(get_uow),
+    _principal: AuthenticatedPrincipal = Depends(
+        require_permission(Permission.JOB_READ)
+    ),
+):
     with uow:
         assert uow.session is not None
         job = uow.session.query(IngestionJob).get(job_id)

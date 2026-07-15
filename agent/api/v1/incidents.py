@@ -1,9 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import List, Optional
 from pydantic import BaseModel
-from agent.api.deps import get_uow
+from agent.api.deps import get_uow, require_permission
+from agent.application.authentication import AuthenticatedPrincipal
 from agent.persistence.unit_of_work import UnitOfWork
 from agent.persistence.lifecycle import IncidentLifecycle
+from agent.security.authorization import Permission
 
 router = APIRouter(prefix="/incidents", tags=["incidents"])
 
@@ -27,7 +29,10 @@ def list_incidents(
     status: Optional[str] = None, 
     skip: int = Query(0, ge=0), 
     limit: int = Query(100, ge=1, le=1000), 
-    uow: UnitOfWork = Depends(get_uow)
+    uow: UnitOfWork = Depends(get_uow),
+    _principal: AuthenticatedPrincipal = Depends(
+        require_permission(Permission.INCIDENT_READ)
+    ),
 ):
     with uow:
         assert uow.session is not None
@@ -54,7 +59,13 @@ def list_incidents(
         ]
 
 @router.get("/{incident_id}", response_model=IncidentResponse)
-def get_incident(incident_id: str, uow: UnitOfWork = Depends(get_uow)):
+def get_incident(
+    incident_id: str,
+    uow: UnitOfWork = Depends(get_uow),
+    _principal: AuthenticatedPrincipal = Depends(
+        require_permission(Permission.INCIDENT_READ)
+    ),
+):
     with uow:
         incident = uow.incidents.get(incident_id)
         if not incident:
@@ -72,7 +83,14 @@ def get_incident(incident_id: str, uow: UnitOfWork = Depends(get_uow)):
         )
 
 @router.patch("/{incident_id}/status")
-def update_status(incident_id: str, req: StatusUpdateRequest, uow: UnitOfWork = Depends(get_uow)):
+def update_status(
+    incident_id: str,
+    req: StatusUpdateRequest,
+    uow: UnitOfWork = Depends(get_uow),
+    principal: AuthenticatedPrincipal = Depends(
+        require_permission(Permission.INCIDENT_STATUS_UPDATE)
+    ),
+):
     from agent.application.errors import InvalidTransitionError
     
     with uow:
@@ -91,11 +109,12 @@ def update_status(incident_id: str, req: StatusUpdateRequest, uow: UnitOfWork = 
             
         try:
             IncidentLifecycle.transition(
-                incident, 
-                req.status, 
-                actor_type="api_client",
-                actor_id="anonymous_api_client",
-                details=req.details or {}
+                incident,
+                req.status,
+                actor=principal.subject_type,
+                actor_type=principal.subject_type,
+                actor_id=principal.subject_id,
+                details={},
             )
             uow.commit()
         except InvalidTransitionError as e:
@@ -104,7 +123,13 @@ def update_status(incident_id: str, req: StatusUpdateRequest, uow: UnitOfWork = 
         return {"status": "success", "new_status": incident.status, "version": incident.version}
 
 @router.get("/{incident_id}/signals")
-def get_signals(incident_id: str, uow: UnitOfWork = Depends(get_uow)):
+def get_signals(
+    incident_id: str,
+    uow: UnitOfWork = Depends(get_uow),
+    _principal: AuthenticatedPrincipal = Depends(
+        require_permission(Permission.INCIDENT_READ)
+    ),
+):
     with uow:
         incident = uow.incidents.get(incident_id)
         if not incident:
@@ -113,7 +138,13 @@ def get_signals(incident_id: str, uow: UnitOfWork = Depends(get_uow)):
         return [{"signal_id": s.signal_id} for s in incident.signals]
 
 @router.get("/{incident_id}/events")
-def get_events(incident_id: str, uow: UnitOfWork = Depends(get_uow)):
+def get_events(
+    incident_id: str,
+    uow: UnitOfWork = Depends(get_uow),
+    _principal: AuthenticatedPrincipal = Depends(
+        require_permission(Permission.INCIDENT_READ)
+    ),
+):
     with uow:
         incident = uow.incidents.get(incident_id)
         if not incident:
@@ -122,7 +153,13 @@ def get_events(incident_id: str, uow: UnitOfWork = Depends(get_uow)):
         return [{"event_id": e.event_id, "is_context": e.is_context} for e in incident.events]
 
 @router.get("/{incident_id}/triage-runs")
-def get_triage_runs(incident_id: str, uow: UnitOfWork = Depends(get_uow)):
+def get_triage_runs(
+    incident_id: str,
+    uow: UnitOfWork = Depends(get_uow),
+    _principal: AuthenticatedPrincipal = Depends(
+        require_permission(Permission.INCIDENT_READ)
+    ),
+):
     with uow:
         incident = uow.incidents.get(incident_id)
         if not incident:
@@ -138,7 +175,13 @@ def get_triage_runs(incident_id: str, uow: UnitOfWork = Depends(get_uow)):
         } for r in incident.triage_runs]
 
 @router.get("/{incident_id}/evidence")
-def get_evidence(incident_id: str, uow: UnitOfWork = Depends(get_uow)):
+def get_evidence(
+    incident_id: str,
+    uow: UnitOfWork = Depends(get_uow),
+    _principal: AuthenticatedPrincipal = Depends(
+        require_permission(Permission.INCIDENT_READ)
+    ),
+):
     with uow:
         incident = uow.incidents.get(incident_id)
         if not incident:
@@ -159,7 +202,13 @@ def get_evidence(incident_id: str, uow: UnitOfWork = Depends(get_uow)):
         return evidence_list
 
 @router.get("/{incident_id}/report")
-def get_report(incident_id: str, uow: UnitOfWork = Depends(get_uow)):
+def get_report(
+    incident_id: str,
+    uow: UnitOfWork = Depends(get_uow),
+    _principal: AuthenticatedPrincipal = Depends(
+        require_permission(Permission.REPORT_READ)
+    ),
+):
     with uow:
         incident = uow.incidents.get(incident_id)
         if not incident:
@@ -191,7 +240,13 @@ def get_report(incident_id: str, uow: UnitOfWork = Depends(get_uow)):
         }
         
 @router.get("/{incident_id}/timeline")
-def get_timeline(incident_id: str, uow: UnitOfWork = Depends(get_uow)):
+def get_timeline(
+    incident_id: str,
+    uow: UnitOfWork = Depends(get_uow),
+    _principal: AuthenticatedPrincipal = Depends(
+        require_permission(Permission.INCIDENT_AUDIT_READ)
+    ),
+):
     with uow:
         incident = uow.incidents.get(incident_id)
         if not incident:

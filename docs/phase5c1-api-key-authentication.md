@@ -7,8 +7,8 @@ It does not complete the broader Phase 5C security roadmap.
 
 `AUTH_MODE` accepts two validated values:
 
-- `disabled` returns an explicit local-development principal. This mode is for
-  local development and tests only; it does not validate a credential.
+- `disabled` returns an explicit local-development admin principal. This mode
+  is for local development and tests only; it bypasses authentication and RBAC.
 - `api_key` requires a valid active API key for application endpoints.
 
 The mode is server configuration. Request headers, query parameters, request
@@ -71,8 +71,9 @@ keys, hashes, Authorization headers, request bodies, or database credentials.
 
 ## Current scope and roadmap
 
-All active API credentials currently receive the same service role. Phase 5C.2
-will add role-based authorization; this phase does not enforce role differences.
-Human-user JWT/OIDC authentication is planned for Phase 5C.3. Password
+Phase 5C.2 now persists strict API credential roles and enforces centralized
+endpoint permissions. See [Phase 5C.2 role-based access control](phase5c2-rbac.md)
+for the role matrix, credential creation syntax, and 401/403 behavior.
+Human-user JWT/OIDC authentication remains planned for Phase 5C.3. Password
 authentication, user registration, OAuth login, rate limiting, and login UI are
-not implemented by Phase 5C.1.
+not implemented.

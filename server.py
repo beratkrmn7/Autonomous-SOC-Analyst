@@ -25,13 +25,18 @@ from agent.api.v1.incidents import router as v1_incidents_router  # noqa: E402
 from agent.api.v1.jobs import router as v1_jobs_router  # noqa: E402
 from agent.api.health import router as health_router  # noqa: E402
 from agent.api.v1.workers import router as v1_workers_router  # noqa: E402
-from agent.api.deps import get_uow  # noqa: E402
-from agent.api.deps import get_authenticated_principal  # noqa: E402
+from agent.api.deps import get_uow, require_permission  # noqa: E402
 from agent.application.authentication import (  # noqa: E402
     AUTHENTICATION_ERROR,
+    AuthenticatedPrincipal,
     AuthenticationRequiredError,
 )
 from agent.persistence.unit_of_work import UnitOfWork  # noqa: E402
+from agent.security.authorization import (  # noqa: E402
+    FORBIDDEN_ERROR,
+    AuthorizationDeniedError,
+    Permission,
+)
 
 app = FastAPI(
     title="Agentic SOC Triage Assistant",
@@ -40,21 +45,17 @@ app = FastAPI(
 )
 
 app.include_router(health_router, prefix="/health")
-authenticated = [Depends(get_authenticated_principal)]
 app.include_router(
     v1_incidents_router,
     prefix="/api/v1",
-    dependencies=authenticated,
 )
 app.include_router(
     v1_jobs_router,
     prefix="/api/v1",
-    dependencies=authenticated,
 )
 app.include_router(
     v1_workers_router,
     prefix="/api/v1/workers",
-    dependencies=authenticated,
 )
 
 app.add_middleware(
@@ -96,6 +97,13 @@ async def authentication_required_handler(
         content=AUTHENTICATION_ERROR,
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+
+@app.exception_handler(AuthorizationDeniedError)
+async def authorization_denied_handler(
+    request: Request, exc: AuthorizationDeniedError
+):
+    return JSONResponse(status_code=403, content=FORBIDDEN_ERROR)
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -153,9 +161,14 @@ def readiness_check():
 @app.post(
     "/analyze",
     response_model=AnalyzeResponse,
-    dependencies=authenticated,
 )
-def analyze_incident(req: AnalyzeRequest, uow: UnitOfWork = Depends(get_uow)):
+def analyze_incident(
+    req: AnalyzeRequest,
+    uow: UnitOfWork = Depends(get_uow),
+    _principal: AuthenticatedPrincipal = Depends(
+        require_permission(Permission.JOB_SUBMIT)
+    ),
+):
     """
     Legacy mock endpoint: Ingest raw logs for an incident and run triage.
     """
@@ -222,8 +235,13 @@ def analyze_incident(req: AnalyzeRequest, uow: UnitOfWork = Depends(get_uow)):
         report_status="Generated" if final_state.get('final_report') else "Not Generated"
     )
 
-@app.post("/ingest/file", dependencies=authenticated)
-async def ingest_file(file: UploadFile = File(...)):
+@app.post("/ingest/file")
+async def ingest_file(
+    file: UploadFile = File(...),
+    _principal: AuthenticatedPrincipal = Depends(
+        require_permission(Permission.JOB_SUBMIT)
+    ),
+):
     """
     Ingest a raw log file and return a metric summary. Does not run triage.
     """
@@ -244,8 +262,14 @@ async def ingest_file(file: UploadFile = File(...)):
             os.remove(temp_path)
 
 
-@app.post("/detect/file", dependencies=authenticated)
-async def detect_file(file: UploadFile = File(...), uow: UnitOfWork = Depends(get_uow)):
+@app.post("/detect/file")
+async def detect_file(
+    file: UploadFile = File(...),
+    uow: UnitOfWork = Depends(get_uow),
+    _principal: AuthenticatedPrincipal = Depends(
+        require_permission(Permission.JOB_SUBMIT)
+    ),
+):
     """
     Ingest a raw JSONL log file, parse it into Canonical Events, and return Detection Signals.
     """
@@ -336,8 +360,14 @@ async def detect_file(file: UploadFile = File(...), uow: UnitOfWork = Depends(ge
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
-@app.post("/analyze/file", dependencies=authenticated)
-async def analyze_file(file: UploadFile = File(...), uow: UnitOfWork = Depends(get_uow)):
+@app.post("/analyze/file")
+async def analyze_file(
+    file: UploadFile = File(...),
+    uow: UnitOfWork = Depends(get_uow),
+    _principal: AuthenticatedPrincipal = Depends(
+        require_permission(Permission.JOB_SUBMIT)
+    ),
+):
     """
     Analyze a raw JSONL log file, performing full ingestion, filtering, correlation, and LLM triage.
     """
@@ -397,11 +427,14 @@ async def analyze_file(file: UploadFile = File(...), uow: UnitOfWork = Depends(g
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
-@app.get("/incident/{incident_id}/report", dependencies=authenticated)
-def get_incident_report(incident_id: str):
-    from agent.persistence.unit_of_work import UnitOfWork
-    
-    uow = UnitOfWork()
+@app.get("/incident/{incident_id}/report")
+def get_incident_report(
+    incident_id: str,
+    _principal: AuthenticatedPrincipal = Depends(
+        require_permission(Permission.REPORT_READ)
+    ),
+    uow: UnitOfWork = Depends(get_uow),
+):
     with uow:
         incident = uow.incidents.get(incident_id)
         if not incident:

@@ -7,6 +7,7 @@ from agent.application.authentication import (
     CredentialNotFoundError,
 )
 from agent.persistence.unit_of_work import UnitOfWork
+from agent.security.authorization import Role
 
 
 def _optional_timestamp(value: datetime.datetime | None) -> str:
@@ -28,6 +29,12 @@ def _build_parser() -> argparse.ArgumentParser:
     create = commands.add_parser("create", help="Create an API credential")
     create.add_argument("--name", required=True)
     create.add_argument("--description")
+    create.add_argument(
+        "--role",
+        choices=[role.value for role in Role],
+        default=Role.SERVICE.value,
+        help="Credential role (default: service)",
+    )
     create.add_argument(
         "--expires-at",
         type=_parse_expiry,
@@ -56,19 +63,21 @@ def main(
                 name=args.name,
                 description=args.description,
                 expires_at=args.expires_at,
+                role=args.role,
             )
             credential = generated.credential
             print(f"Credential ID: {credential.credential_id}")
             print(f"Name: {credential.name}")
             print(f"Prefix: {credential.key_prefix}")
             print(f"Status: {credential.status}")
+            print(f"Role: {credential.role}")
             print(f"Expires at: {_optional_timestamp(credential.expires_at)}")
             print(f"API key (shown once): {generated.api_key}")
             return 0
 
         if args.command == "list":
             print(
-                "credential_id\tname\tprefix\tstatus\tcreated_at\t"
+                "credential_id\tname\tprefix\tstatus\trole\tcreated_at\t"
                 "expires_at\tlast_used_at"
             )
             for credential in service.list_credentials():
@@ -77,6 +86,7 @@ def main(
                     credential.name,
                     credential.key_prefix,
                     credential.status,
+                    credential.role,
                     credential.created_at.isoformat(),
                     _optional_timestamp(credential.expires_at),
                     _optional_timestamp(credential.last_used_at),

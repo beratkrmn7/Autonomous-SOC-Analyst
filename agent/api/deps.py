@@ -1,4 +1,7 @@
-from fastapi import Depends, Header
+import logging
+from collections.abc import Callable
+
+from fastapi import Depends, Header, Request
 
 from agent.application.authentication import (
     AuthenticatedPrincipal,
@@ -9,6 +12,13 @@ from agent.application.authentication import (
 from agent.persistence.unit_of_work import UnitOfWork
 from agent.persistence.database import create_engine_factory, create_session_factory
 from agent.config import Settings, get_settings
+from agent.security.authorization import (
+    AuthorizationDeniedError,
+    Permission,
+    has_permission,
+)
+
+logger = logging.getLogger(__name__)
 
 # Global engine/session factory for FastAPI
 settings = get_settings()
@@ -48,3 +58,27 @@ def get_authenticated_principal(
     ):
         raise AuthenticationRequiredError()
     return ApiKeyAuthenticationService(uow).authenticate(api_key)
+
+
+def require_permission(
+    permission: Permission,
+) -> Callable[..., AuthenticatedPrincipal]:
+    def permission_dependency(
+        request: Request,
+        principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+    ) -> AuthenticatedPrincipal:
+        if has_permission(principal.roles, permission):
+            return principal
+
+        logger.warning(
+            "authorization_denied",
+            extra={
+                "subject_id": principal.subject_id,
+                "permission": permission.value,
+                "request_id": getattr(request.state, "request_id", None),
+            },
+        )
+        raise AuthorizationDeniedError()
+
+    setattr(permission_dependency, "required_permission", permission)
+    return permission_dependency
