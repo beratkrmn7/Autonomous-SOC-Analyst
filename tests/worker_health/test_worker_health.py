@@ -160,7 +160,11 @@ def test_readiness_fails_safely_when_database_is_unavailable(client):
 def test_readiness_database_backend_no_worker(client, override_deps):
     settings = get_settings()
     settings.task_queue_backend = "database"
-    res = client.get("/health/ready")
+    with patch(
+        "redis.Redis.from_url",
+        side_effect=AssertionError("Redis must not be checked"),
+    ):
+        res = client.get("/health/ready")
     assert res.status_code == 200
 
 def test_readiness_celery_backend_no_worker(client, override_deps):
@@ -169,6 +173,7 @@ def test_readiness_celery_backend_no_worker(client, override_deps):
     with patch("redis.Redis.from_url"):
         res = client.get("/health/ready")
         assert res.status_code == 503
+        assert res.json()["components"]["worker"] == "down"
     settings.task_queue_backend = "database"
 
 def test_readiness_celery_backend_active_worker(client, db_session_factory, db_session, override_deps):
@@ -189,6 +194,7 @@ def test_readiness_celery_backend_active_worker(client, db_session_factory, db_s
     with patch("redis.Redis.from_url"):
         res = client.get("/health/ready")
         assert res.status_code == 200
+        assert res.json()["components"]["worker"] == "up"
     
     settings.task_queue_backend = "database"
 

@@ -150,7 +150,8 @@ Consequently, a service credential may submit and read jobs but cannot cancel
 jobs or change incident status; an analyst can perform those mutations across
 currently visible resources.
 
-JWT validation, OIDC discovery, OAuth login, passwords, browser sessions, and
-human-user authentication are not implemented. Phase 5C.3 is the planned
-JWT/OIDC human-identity phase. Rate limiting, credential HTTP management, and
-field-level authorization also remain out of scope.
+Phase 5C.3 now validates externally issued OIDC JWT access tokens for human SOC
+users while reusing this permission matrix. It still does not implement token
+issuance, OAuth login redirects, passwords, browser sessions, or a login UI.
+Rate limiting, credential HTTP management, and field-level authorization also
+remain out of scope.

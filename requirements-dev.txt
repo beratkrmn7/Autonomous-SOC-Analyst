@@ -4,4 +4,3 @@ pytest-cov
 ruff
 mypy
 hypothesis
-httpx

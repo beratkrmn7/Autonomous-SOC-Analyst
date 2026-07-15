@@ -1,13 +1,65 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import SecretStr, Field
+from pydantic import SecretStr, Field, model_validator
 from agent.ingestion.limits import IngestionLimits
 from typing import Literal, Optional
 from functools import lru_cache
+from urllib.parse import urlsplit
+
+from agent.security.authorization import Role
+
+
+OIDC_ASYMMETRIC_ALGORITHMS = frozenset({
+    "RS256",
+    "RS384",
+    "RS512",
+    "PS256",
+    "PS384",
+    "PS512",
+    "ES256",
+    "ES384",
+    "ES512",
+})
+
+
+def _validate_oidc_url(value: str, *, require_https: bool, field: str) -> str:
+    normalized = value.strip()
+    parsed = urlsplit(normalized)
+    allowed_schemes = {"https"} if require_https else {"http", "https"}
+    if (
+        parsed.scheme.lower() not in allowed_schemes
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+    ):
+        raise ValueError(f"{field}_invalid")
+    return normalized
 
 class Settings(BaseSettings):
     app_env: str = "development"
     log_level: str = "INFO"
-    auth_mode: Literal["disabled", "api_key"] = "disabled"
+    auth_mode: Literal["disabled", "api_key", "oidc", "hybrid"] = "disabled"
+    oidc_issuer: Optional[str] = None
+    oidc_audience: Optional[str] = None
+    oidc_discovery_url: Optional[str] = None
+    oidc_allowed_algorithms: list[str] = Field(default_factory=lambda: ["RS256"])
+    oidc_clock_skew_seconds: int = Field(default=30, ge=0, le=300)
+    oidc_http_timeout_seconds: float = Field(default=5, gt=0, le=30)
+    oidc_metadata_cache_ttl_seconds: int = Field(default=300, ge=1, le=86400)
+    oidc_jwks_cache_ttl_seconds: int = Field(default=300, ge=1, le=86400)
+    oidc_token_use_claim: str = Field(
+        default="token_use", min_length=1, max_length=128
+    )
+    oidc_access_token_use_value: str = Field(
+        default="access", min_length=1, max_length=128
+    )
+    oidc_require_access_token_indicator: bool = True
+    oidc_roles_claim: str = Field(default="roles", min_length=1, max_length=128)
+    oidc_role_mapping: dict[str, str] = Field(default_factory=dict)
+    oidc_display_name_claim: str = Field(
+        default="preferred_username", min_length=1, max_length=128
+    )
+    oidc_require_https: bool = True
 
     llm_enabled: bool = True
     llm_provider: Literal["groq"] = "groq"
@@ -61,6 +113,63 @@ class Settings(BaseSettings):
     
     worker_heartbeat_interval_seconds: int = Field(default=15, ge=1)
     worker_heartbeat_stale_seconds: int = Field(default=60, ge=1)
+
+    @model_validator(mode="after")
+    def validate_oidc_settings(self) -> "Settings":
+        if self.auth_mode not in ("oidc", "hybrid"):
+            return self
+
+        if not self.oidc_issuer or not self.oidc_issuer.strip():
+            raise ValueError("oidc_issuer_required")
+        if not self.oidc_audience or not self.oidc_audience.strip():
+            raise ValueError("oidc_audience_required")
+
+        self.oidc_issuer = _validate_oidc_url(
+            self.oidc_issuer,
+            require_https=self.oidc_require_https,
+            field="oidc_issuer",
+        )
+        discovery_url = self.oidc_discovery_url or (
+            f"{self.oidc_issuer.rstrip('/')}"
+            "/.well-known/openid-configuration"
+        )
+        self.oidc_discovery_url = _validate_oidc_url(
+            discovery_url,
+            require_https=self.oidc_require_https,
+            field="oidc_discovery_url",
+        )
+        self.oidc_audience = self.oidc_audience.strip()
+        if len(self.oidc_audience) > 256:
+            raise ValueError("oidc_audience_invalid")
+
+        algorithms = tuple(dict.fromkeys(self.oidc_allowed_algorithms))
+        if not algorithms or any(
+            algorithm not in OIDC_ASYMMETRIC_ALGORITHMS
+            for algorithm in algorithms
+        ):
+            raise ValueError("oidc_allowed_algorithms_invalid")
+        self.oidc_allowed_algorithms = list(algorithms)
+
+        token_use_claim = self.oidc_token_use_claim.strip()
+        access_token_use_value = self.oidc_access_token_use_value.strip()
+        if not token_use_claim or not access_token_use_value:
+            raise ValueError("oidc_access_token_indicator_invalid")
+        if not self.oidc_require_access_token_indicator:
+            raise ValueError("oidc_access_token_indicator_required")
+        self.oidc_token_use_claim = token_use_claim
+        self.oidc_access_token_use_value = access_token_use_value
+
+        if len(self.oidc_role_mapping) > 100:
+            raise ValueError("oidc_role_mapping_invalid")
+        valid_internal_roles = {role.value for role in Role}
+        for external_role, internal_role in self.oidc_role_mapping.items():
+            if (
+                not external_role.strip()
+                or len(external_role) > 128
+                or internal_role not in valid_internal_roles
+            ):
+                raise ValueError("oidc_role_mapping_invalid")
+        return self
     
     @property
     def safe_database_url(self) -> str:
