@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from typing import List, Optional
 from pydantic import BaseModel
 from agent.api.deps import get_uow, require_permission
@@ -86,6 +86,7 @@ def get_incident(
 def update_status(
     incident_id: str,
     req: StatusUpdateRequest,
+    request: Request,
     uow: UnitOfWork = Depends(get_uow),
     principal: AuthenticatedPrincipal = Depends(
         require_permission(Permission.INCIDENT_STATUS_UPDATE)
@@ -114,6 +115,7 @@ def update_status(
                 actor=principal.subject_type,
                 actor_type=principal.subject_type,
                 actor_id=principal.subject_id,
+                request_id=request.state.request_id,
                 details={},
             )
             uow.commit()

@@ -1,6 +1,6 @@
 import datetime
 
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from agent.api.deps import (
@@ -79,6 +79,7 @@ async def submit_file_job(
 @router.post("/analysis-jobs/{job_id}/cancel")
 async def cancel_job(
     job_id: str,
+    request: Request,
     uow: UnitOfWork = Depends(get_uow),
     staging_store: FileStagingStore = Depends(get_staging_store),
     principal: AuthenticatedPrincipal = Depends(
@@ -91,6 +92,7 @@ async def cancel_job(
             job_id,
             actor_type=principal.subject_type,
             actor_id=principal.subject_id,
+            request_id=request.state.request_id,
         )
     except JobNotFoundError:
         return JSONResponse(status_code=404, content={"code": "job_not_found"})

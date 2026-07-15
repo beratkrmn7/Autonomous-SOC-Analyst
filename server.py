@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Depends
+from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -6,7 +6,6 @@ from typing import List, Optional
 import uvicorn
 import os
 import tempfile
-import uuid
 import hashlib
 
 def calculate_file_sha256(filepath: str) -> str:
@@ -16,7 +15,7 @@ def calculate_file_sha256(filepath: str) -> str:
             sha256_hash.update(byte_block)
     return sha256_hash.hexdigest()
 
-from agent.config import get_settings  # noqa: E402
+from agent.config import Settings, get_settings  # noqa: E402
 from agent.errors import InputTooLargeError, UnsupportedInputFormatError, InvalidEncodingError  # noqa: E402
 from agent.graph import app as agent_app  # noqa: E402
 from agent.ingestion.pipeline import IngestionPipeline  # noqa: E402
@@ -37,61 +36,58 @@ from agent.security.authorization import (  # noqa: E402
     AuthorizationDeniedError,
     Permission,
 )
-
-app = FastAPI(
-    title="Agentic SOC Triage Assistant",
-    description="Agentic SOC Triage workflow using LangGraph and Groq",
-    version="1.0.0"
+from agent.api.security import (  # noqa: E402
+    CORS_ALLOWED_HEADERS,
+    CORS_ALLOWED_METHODS,
+    DeploymentBoundaryMiddleware,
+    INTERNAL_ERROR,
+    REQUEST_TOO_LARGE_ERROR,
+    docs_urls,
 )
 
-app.include_router(health_router, prefix="/health")
-app.include_router(
-    v1_incidents_router,
-    prefix="/api/v1",
-)
-app.include_router(
-    v1_jobs_router,
-    prefix="/api/v1",
-)
-app.include_router(
-    v1_workers_router,
-    prefix="/api/v1/workers",
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+legacy_router = APIRouter()
 
 # RAM store removed to use persistent database backend
-@app.exception_handler(InputTooLargeError)
-async def input_too_large_handler(request: Request, exc: InputTooLargeError):
+async def input_too_large_handler(
+    request: Request,
+    exc: Exception,
+) -> JSONResponse:
     return JSONResponse(
         status_code=413,
-        content={"code": "input_too_large", "message": "The uploaded file exceeds the configured size limit.", "request_id": uuid.uuid4().hex}
+        content=REQUEST_TOO_LARGE_ERROR,
     )
 
-@app.exception_handler(UnsupportedInputFormatError)
-async def unsupported_format_handler(request: Request, exc: UnsupportedInputFormatError):
+async def unsupported_format_handler(
+    request: Request,
+    exc: Exception,
+) -> JSONResponse:
     return JSONResponse(
         status_code=415,
-        content={"code": "unsupported_input_format", "message": "The uploaded file format is not supported.", "request_id": uuid.uuid4().hex}
+        content={
+            "code": "unsupported_input_format",
+            "message": "The uploaded file format is not supported.",
+            "request_id": request.state.request_id,
+        },
     )
 
-@app.exception_handler(InvalidEncodingError)
-async def invalid_encoding_handler(request: Request, exc: InvalidEncodingError):
+async def invalid_encoding_handler(
+    request: Request,
+    exc: Exception,
+) -> JSONResponse:
     return JSONResponse(
         status_code=422,
-        content={"code": "invalid_encoding", "message": "The uploaded file contains invalid text encoding.", "request_id": uuid.uuid4().hex}
+        content={
+            "code": "invalid_encoding",
+            "message": "The uploaded file contains invalid text encoding.",
+            "request_id": request.state.request_id,
+        },
     )
 
 
-@app.exception_handler(AuthenticationRequiredError)
 async def authentication_required_handler(
-    request: Request, exc: AuthenticationRequiredError
-):
+    request: Request,
+    exc: Exception,
+) -> JSONResponse:
     return JSONResponse(
         status_code=401,
         content=AUTHENTICATION_ERROR,
@@ -99,22 +95,36 @@ async def authentication_required_handler(
     )
 
 
-@app.exception_handler(AuthorizationDeniedError)
 async def authorization_denied_handler(
-    request: Request, exc: AuthorizationDeniedError
-):
+    request: Request,
+    exc: Exception,
+) -> JSONResponse:
     return JSONResponse(status_code=403, content=FORBIDDEN_ERROR)
 
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
+async def global_exception_handler(
+    request: Request,
+    exc: Exception,
+) -> JSONResponse:
+    import logging
+
+    logging.getLogger(__name__).error(
+        "unhandled_request_error",
+        extra={
+            "request_id": request.state.request_id,
+            "exception_type": type(exc).__name__,
+        },
+    )
     return JSONResponse(
         status_code=500,
-        content={"code": "internal_error", "message": "An internal error occurred.", "request_id": uuid.uuid4().hex}
+        content=INTERNAL_ERROR,
     )
 
-async def secure_save_upload(file: UploadFile) -> str:
+async def secure_save_upload(
+    file: UploadFile,
+    *,
+    max_upload_bytes: int,
+) -> str:
     """Safely saves an uploaded file to a temporary location using chunking and byte limits."""
-    settings = get_settings()
     temp_path = None
     try:
         with tempfile.NamedTemporaryFile(mode="wb", delete=False) as temp_file:
@@ -122,10 +132,10 @@ async def secure_save_upload(file: UploadFile) -> str:
             total_bytes = 0
             while chunk := await file.read(8192):
                 total_bytes += len(chunk)
-                if total_bytes > settings.ingestion.MAX_UPLOAD_BYTES:
+                if total_bytes > max_upload_bytes:
                     temp_file.close()
                     os.remove(temp_path)
-                    raise InputTooLargeError(f"Upload exceeds maximum limit of {settings.ingestion.MAX_UPLOAD_BYTES} bytes.")
+                    raise InputTooLargeError("request_too_large")
                 temp_file.write(chunk)
         return temp_path
     except Exception:
@@ -146,19 +156,22 @@ class AnalyzeResponse(BaseModel):
     mitre_techniques: Optional[List[str]]
     report_status: str
 
-@app.get("/health")
+@legacy_router.get("/health")
 def health_check():
     return {"status": "ok"}
 
-@app.get("/ready")
+@legacy_router.get("/ready")
 def readiness_check():
     from agent.config import get_settings
     settings = get_settings()
     if settings.llm_enabled and not settings.groq_api_key:
-        return {"status": "unready", "reason": "Missing API key for LLM"}
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready"},
+        )
     return {"status": "ready"}
 
-@app.post(
+@legacy_router.post(
     "/analyze",
     response_model=AnalyzeResponse,
 )
@@ -235,9 +248,10 @@ def analyze_incident(
         report_status="Generated" if final_state.get('final_report') else "Not Generated"
     )
 
-@app.post("/ingest/file")
+@legacy_router.post("/ingest/file")
 async def ingest_file(
     file: UploadFile = File(...),
+    settings: Settings = Depends(get_settings),
     _principal: AuthenticatedPrincipal = Depends(
         require_permission(Permission.JOB_SUBMIT)
     ),
@@ -245,7 +259,10 @@ async def ingest_file(
     """
     Ingest a raw log file and return a metric summary. Does not run triage.
     """
-    temp_path = await secure_save_upload(file)
+    temp_path = await secure_save_upload(
+        file,
+        max_upload_bytes=settings.max_upload_bytes,
+    )
         
     try:
         ingest = IngestionPipeline()
@@ -262,9 +279,10 @@ async def ingest_file(
             os.remove(temp_path)
 
 
-@app.post("/detect/file")
+@legacy_router.post("/detect/file")
 async def detect_file(
     file: UploadFile = File(...),
+    settings: Settings = Depends(get_settings),
     uow: UnitOfWork = Depends(get_uow),
     _principal: AuthenticatedPrincipal = Depends(
         require_permission(Permission.JOB_SUBMIT)
@@ -275,13 +293,17 @@ async def detect_file(
     """
     from agent.application.analysis_service import AnalysisService
     from agent.application.errors import DuplicateAnalysisError
-    temp_path = await secure_save_upload(file)
+    temp_path = await secure_save_upload(
+        file,
+        max_upload_bytes=settings.max_upload_bytes,
+    )
         
     try:
-        from agent.config import get_settings
         analysis_mode = "detect"
         file_sha256 = calculate_file_sha256(temp_path)
-        idempotency_key = f"{file_sha256}:{get_settings().pipeline_version}:{analysis_mode}"
+        idempotency_key = (
+            f"{file_sha256}:{settings.pipeline_version}:{analysis_mode}"
+        )
         
         svc = AnalysisService(uow=uow)
         try:
@@ -291,11 +313,17 @@ async def detect_file(
                 source_name="api_detect",
                 file_sha256=file_sha256,
                 idempotency_key=idempotency_key,
-                pipeline_version=get_settings().pipeline_version,
+                pipeline_version=settings.pipeline_version,
                 analysis_mode=analysis_mode
             )
         except DuplicateAnalysisError:
-            raise HTTPException(status_code=409, detail="Analysis already in progress for this file and mode.")
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "analysis_already_in_progress",
+                    "message": "Analysis is already in progress.",
+                },
+            )
         det_result = result.detection_result
         ingest_result = result.ingestion_result
         
@@ -350,19 +378,14 @@ async def detect_file(
             "signals_summary": safe_signals,
             "warnings": det_result.warnings if det_result else []
         }
-    except Exception as e:
-        if isinstance(e, HTTPException):
-            raise e
-        import logging
-        logging.error(f"Error in /detect/file: {type(e).__name__} - {str(e)}", exc_info=False)
-        raise HTTPException(status_code=500, detail="internal_error")
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
-@app.post("/analyze/file")
+@legacy_router.post("/analyze/file")
 async def analyze_file(
     file: UploadFile = File(...),
+    settings: Settings = Depends(get_settings),
     uow: UnitOfWork = Depends(get_uow),
     _principal: AuthenticatedPrincipal = Depends(
         require_permission(Permission.JOB_SUBMIT)
@@ -373,13 +396,17 @@ async def analyze_file(
     """
     from agent.application.analysis_service import AnalysisService
     from agent.application.errors import DuplicateAnalysisError
-    temp_path = await secure_save_upload(file)
+    temp_path = await secure_save_upload(
+        file,
+        max_upload_bytes=settings.max_upload_bytes,
+    )
         
     try:
-        from agent.config import get_settings
         analysis_mode = "analyze"
         file_sha256 = calculate_file_sha256(temp_path)
-        idempotency_key = f"{file_sha256}:{get_settings().pipeline_version}:{analysis_mode}"
+        idempotency_key = (
+            f"{file_sha256}:{settings.pipeline_version}:{analysis_mode}"
+        )
         
         svc = AnalysisService(uow=uow)
         try:
@@ -389,11 +416,17 @@ async def analyze_file(
                 source_name="api_analyze",
                 file_sha256=file_sha256,
                 idempotency_key=idempotency_key,
-                pipeline_version=get_settings().pipeline_version,
+                pipeline_version=settings.pipeline_version,
                 analysis_mode=analysis_mode
             )
         except DuplicateAnalysisError:
-            raise HTTPException(status_code=409, detail="Analysis already in progress for this file and mode.")
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "analysis_already_in_progress",
+                    "message": "Analysis is already in progress.",
+                },
+            )
         
         incident_summaries = []
         for inc_state in result.incidents:
@@ -417,17 +450,11 @@ async def analyze_file(
             "incidents_generated": len(incident_summaries),
             "incidents": incident_summaries
         }
-    except Exception as e:
-        if isinstance(e, HTTPException):
-            raise e
-        import logging
-        logging.error(f"Error in /analyze/file: {type(e).__name__} - {str(e)}", exc_info=False)
-        raise HTTPException(status_code=500, detail="internal_error")
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
-@app.get("/incident/{incident_id}/report")
+@legacy_router.get("/incident/{incident_id}/report")
 def get_incident_report(
     incident_id: str,
     _principal: AuthenticatedPrincipal = Depends(
@@ -456,6 +483,63 @@ def get_incident_report(
             "mitre_techniques": report.mitre_techniques,
             "final_report_markdown": report.content
         }
+
+
+def create_app(settings: Settings | None = None) -> FastAPI:
+    application_settings = settings or get_settings()
+    application = FastAPI(
+        title="Agentic SOC Triage Assistant",
+        description="Agentic SOC Triage workflow using LangGraph and Groq",
+        version="1.0.0",
+        **docs_urls(application_settings),
+    )
+
+    application.include_router(health_router, prefix="/health")
+    application.include_router(v1_incidents_router, prefix="/api/v1")
+    application.include_router(v1_jobs_router, prefix="/api/v1")
+    application.include_router(
+        v1_workers_router,
+        prefix="/api/v1/workers",
+    )
+    application.include_router(legacy_router)
+
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=application_settings.cors_allowed_origins,
+        allow_credentials=application_settings.cors_allow_credentials,
+        allow_methods=CORS_ALLOWED_METHODS,
+        allow_headers=CORS_ALLOWED_HEADERS,
+    )
+    application.add_middleware(
+        DeploymentBoundaryMiddleware,
+        settings=application_settings,
+    )
+
+    application.add_exception_handler(
+        InputTooLargeError,
+        input_too_large_handler,
+    )
+    application.add_exception_handler(
+        UnsupportedInputFormatError,
+        unsupported_format_handler,
+    )
+    application.add_exception_handler(
+        InvalidEncodingError,
+        invalid_encoding_handler,
+    )
+    application.add_exception_handler(
+        AuthenticationRequiredError,
+        authentication_required_handler,
+    )
+    application.add_exception_handler(
+        AuthorizationDeniedError,
+        authorization_denied_handler,
+    )
+    application.add_exception_handler(Exception, global_exception_handler)
+    return application
+
+
+app = create_app()
 
 if __name__ == "__main__":
     print("Starting Agentic SOC API Server on http://localhost:8000")

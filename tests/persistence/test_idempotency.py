@@ -9,7 +9,6 @@ from agent.persistence.unit_of_work import UnitOfWork
 from agent.persistence.orm_models import Base, IngestionJob
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from unittest.mock import patch
 
 # Create a file-backed DB for all idempotency tests to correctly simulate cross-thread blocking and parallel writes
 # We create a new file-backed SQLite database for each test session to avoid WinError 32 issues
@@ -142,10 +141,12 @@ def test_idempotency_pipeline_version(api_client, temp_db):
             res1 = api_client.post("/analyze/file", files={"file": f})
         assert res1.status_code == 200
         
-        # Override pipeline version via config mock
-        from agent.config import Settings
-        with patch('agent.config.get_settings') as mock_settings:
-            mock_settings.return_value = Settings(pipeline_version="v2.0")
+        # Override the FastAPI dependency used by the upload endpoint.
+        from agent.config import Settings, get_settings
+        app.dependency_overrides[get_settings] = lambda: Settings(
+            pipeline_version="v2.0"
+        )
+        try:
             with open(path, "rb") as f:
                 res2 = api_client.post("/analyze/file", files={"file": f})
             assert res2.status_code == 200
@@ -155,6 +156,8 @@ def test_idempotency_pipeline_version(api_client, temp_db):
             with uow:
                 assert uow.session is not None
                 assert uow.session.query(IngestionJob).count() == 2
+        finally:
+            app.dependency_overrides.pop(get_settings, None)
     finally:
         os.remove(path)
 

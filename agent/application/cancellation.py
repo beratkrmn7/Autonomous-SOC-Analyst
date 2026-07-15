@@ -83,6 +83,7 @@ class JobCancellationService:
         actor_type: str,
         actor_id: str,
         timestamp: datetime.datetime,
+        request_id: str | None,
     ) -> None:
         existing = session.query(AuditEvent.id).filter(
             AuditEvent.event_type == event_type,
@@ -102,6 +103,7 @@ class JobCancellationService:
             actor_type=actor_type,
             actor_id=actor_id,
             actor=actor_type,
+            request_id=request_id,
             details={"cancel_reason_code": USER_REQUESTED},
         ))
 
@@ -117,6 +119,7 @@ class JobCancellationService:
         *,
         actor_type: str = "system",
         actor_id: str = "cancellation_service",
+        request_id: str | None = None,
     ) -> JobCancellationResult:
         now = datetime.datetime.now(datetime.timezone.utc)
         cleanup_staging = False
@@ -147,6 +150,7 @@ class JobCancellationService:
                     actor_type=actor_type,
                     actor_id=actor_id,
                     timestamp=now,
+                    request_id=request_id,
                 )
                 self._add_audit_event(
                     session,
@@ -155,6 +159,7 @@ class JobCancellationService:
                     actor_type="system",
                     actor_id="cancellation_service",
                     timestamp=now,
+                    request_id=request_id,
                 )
                 session.commit()
                 cleanup_staging = True
@@ -179,6 +184,7 @@ class JobCancellationService:
                         actor_type=actor_type,
                         actor_id=actor_id,
                         timestamp=now,
+                        request_id=request_id,
                     )
                     session.commit()
                     result = JobCancellationResult(
@@ -232,6 +238,7 @@ class JobCancellationService:
                     actor_type="system",
                     actor_id="analysis_worker",
                     timestamp=now,
+                    request_id=None,
                 )
                 session.commit()
                 cleanup_staging = True

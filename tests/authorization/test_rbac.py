@@ -688,7 +688,7 @@ def test_denial_never_exposes_or_audits_secrets(
         extra={
             "subject_id": viewer.credential.credential_id,
             "permission": Permission.WORKER_READ.value,
-            "request_id": None,
+            "request_id": response.headers["x-request-id"],
         },
     )
     rendered_denial = " ".join((

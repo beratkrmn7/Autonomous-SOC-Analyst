@@ -38,7 +38,10 @@ def get_uow() -> UnitOfWork:
 
 def get_staging_store():
     from agent.application.staging import LocalFileStagingStore
-    return LocalFileStagingStore(staging_dir=settings.staging_dir)
+    return LocalFileStagingStore(
+        staging_dir=settings.staging_dir,
+        max_size_bytes=settings.max_upload_bytes,
+    )
 
 def get_dispatcher():
     from agent.queue.dispatchers import DatabasePollingDispatcher, CeleryAnalysisJobDispatcher
