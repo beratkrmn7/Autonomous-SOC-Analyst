@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends, Response
 from typing import Dict
 from sqlalchemy import text
-from agent.api.deps import get_uow
+from agent.api.deps import get_optional_oidc_authentication_service, get_uow
+from agent.application.oidc_authentication import OidcJwtAuthenticationService
 from agent.persistence.unit_of_work import UnitOfWork
 from agent.persistence.orm_models import WorkerHeartbeat
 from agent.config import get_settings
@@ -14,7 +15,13 @@ async def live():
     return {"status": "live"}
 
 @router.get("/ready", tags=["Health"])
-async def ready(response: Response, uow: UnitOfWork = Depends(get_uow)):
+async def ready(
+    response: Response,
+    uow: UnitOfWork = Depends(get_uow),
+    oidc_service: OidcJwtAuthenticationService | None = Depends(
+        get_optional_oidc_authentication_service
+    ),
+):
     settings = get_settings()
     components: Dict[str, str] = {
         "database": "up",
@@ -30,6 +37,16 @@ async def ready(response: Response, uow: UnitOfWork = Depends(get_uow)):
     except Exception:
         components["database"] = "down"
         status = "not_ready"
+
+    if settings.auth_mode in ("oidc", "hybrid"):
+        components["identity_provider"] = "up"
+        try:
+            if oidc_service is None:
+                raise RuntimeError("oidc_service_unavailable")
+            oidc_service.check_provider()
+        except Exception:
+            components["identity_provider"] = "down"
+            status = "not_ready"
         
     # 2. Check Celery/Redis if enabled
     if settings.task_queue_backend == "celery":
