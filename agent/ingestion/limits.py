@@ -1,7 +1,11 @@
 from pydantic_settings import BaseSettings
 
+
+DEFAULT_MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+
+
 class IngestionLimits(BaseSettings):
-    MAX_UPLOAD_BYTES: int = 52428800  # 50 MB
+    MAX_UPLOAD_BYTES: int = DEFAULT_MAX_UPLOAD_BYTES
     MAX_RECORD_BYTES: int = 1048576   # 1 MB
     MAX_RECORDS_PER_FILE: int = 500000
     MAX_PARSE_FAILURES_STORED: int = 1000

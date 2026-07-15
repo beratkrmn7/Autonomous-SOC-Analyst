@@ -1,5 +1,6 @@
 from collections.abc import Sequence
 from ipaddress import ip_address
+import logging
 import re
 from typing import Any
 import uuid
@@ -10,6 +11,8 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from agent.config import Settings
 
+
+logger = logging.getLogger(__name__)
 
 CORS_ALLOWED_METHODS = ("GET", "POST", "PATCH", "OPTIONS")
 CORS_ALLOWED_HEADERS = (
@@ -31,6 +34,18 @@ DOCS_CONTENT_SECURITY_POLICY = (
     "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; "
     "form-action 'none'"
 )
+REQUEST_TOO_LARGE_ERROR = {
+    "code": "request_too_large",
+    "message": "The request exceeds the allowed size.",
+}
+INTERNAL_ERROR = {
+    "code": "internal_error",
+    "message": "The request could not be completed.",
+}
+
+
+class RequestBodyTooLargeError(Exception):
+    pass
 
 
 def _header_values(scope: Scope, name: bytes) -> list[str]:
@@ -99,6 +114,7 @@ class DeploymentBoundaryMiddleware:
         self.trusted_proxy_ips = frozenset(settings.trusted_proxy_ips)
         self.security_headers_enabled = settings.security_headers_enabled
         self.hsts_max_age_seconds = settings.hsts_max_age_seconds
+        self.max_request_body_bytes = settings.max_request_body_bytes
 
     async def __call__(
         self,
@@ -114,9 +130,12 @@ class DeploymentBoundaryMiddleware:
         state = scope.setdefault("state", {})
         state["request_id"] = request_id
         effective_scheme = str(scope.get("scheme", "http")).lower()
+        response_started = False
 
         async def send_with_security_headers(message: Message) -> None:
+            nonlocal response_started
             if message["type"] == "http.response.start":
+                response_started = True
                 headers = MutableHeaders(scope=message)
                 headers["X-Request-ID"] = request_id
                 if self.security_headers_enabled:
@@ -186,7 +205,82 @@ class DeploymentBoundaryMiddleware:
             )
             return
 
-        await self.app(scope, receive, send_with_security_headers)
+        content_length = self._content_length(scope)
+        if content_length is None:
+            await self._send_error(
+                scope,
+                receive,
+                send_with_security_headers,
+                status_code=400,
+                code="invalid_request",
+                message="The request metadata is invalid.",
+            )
+            return
+        if content_length > self.max_request_body_bytes:
+            await self._send_json(
+                scope,
+                receive,
+                send_with_security_headers,
+                status_code=413,
+                content=REQUEST_TOO_LARGE_ERROR,
+            )
+            return
+
+        bytes_received = 0
+        body_too_large = False
+
+        async def limited_receive() -> Message:
+            nonlocal body_too_large, bytes_received
+            message = await receive()
+            if message["type"] == "http.request":
+                bytes_received += len(message.get("body", b""))
+                if bytes_received > self.max_request_body_bytes:
+                    body_too_large = True
+                    raise RequestBodyTooLargeError()
+            return message
+
+        async def send_application_response(message: Message) -> None:
+            if body_too_large:
+                return
+            await send_with_security_headers(message)
+
+        try:
+            await self.app(scope, limited_receive, send_application_response)
+            if body_too_large:
+                await self._send_json(
+                    scope,
+                    receive,
+                    send_with_security_headers,
+                    status_code=413,
+                    content=REQUEST_TOO_LARGE_ERROR,
+                )
+        except RequestBodyTooLargeError:
+            if response_started:
+                raise
+            await self._send_json(
+                scope,
+                receive,
+                send_with_security_headers,
+                status_code=413,
+                content=REQUEST_TOO_LARGE_ERROR,
+            )
+        except Exception as exc:
+            logger.error(
+                "unhandled_request_error",
+                extra={
+                    "request_id": request_id,
+                    "exception_type": type(exc).__name__,
+                },
+            )
+            if response_started:
+                raise
+            await self._send_json(
+                scope,
+                receive,
+                send_with_security_headers,
+                status_code=500,
+                content=INTERNAL_ERROR,
+            )
 
     @staticmethod
     def _request_id(scope: Scope) -> str:
@@ -194,6 +288,15 @@ class DeploymentBoundaryMiddleware:
         if len(values) == 1 and REQUEST_ID_PATTERN.fullmatch(values[0]):
             return values[0]
         return uuid.uuid4().hex
+
+    @staticmethod
+    def _content_length(scope: Scope) -> int | None:
+        values = _header_values(scope, b"content-length")
+        if not values:
+            return 0
+        if len(values) != 1 or not values[0].isdigit():
+            return None
+        return int(values[0])
 
     @staticmethod
     def _csp_for_scope(scope: Scope) -> str:
@@ -236,6 +339,18 @@ class DeploymentBoundaryMiddleware:
             status_code=status_code,
             content={"code": code, "message": message},
         )
+        await response(scope, receive, send)
+
+    @staticmethod
+    async def _send_json(
+        scope: Scope,
+        receive: Receive,
+        send: Send,
+        *,
+        status_code: int,
+        content: dict[str, str],
+    ) -> None:
+        response = JSONResponse(status_code=status_code, content=content)
         await response(scope, receive, send)
 
 

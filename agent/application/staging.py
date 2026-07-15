@@ -2,6 +2,9 @@ import hashlib
 from typing import Protocol, BinaryIO, Tuple
 from pathlib import Path
 
+from agent.errors import InputTooLargeError
+from agent.ingestion.limits import DEFAULT_MAX_UPLOAD_BYTES
+
 class StagingError(Exception):
     pass
 
@@ -26,7 +29,11 @@ class FileStagingStore(Protocol):
         ...
 
 class LocalFileStagingStore:
-    def __init__(self, staging_dir: str, max_size_bytes: int = 50 * 1024 * 1024):
+    def __init__(
+        self,
+        staging_dir: str,
+        max_size_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
+    ):
         self.staging_dir = Path(staging_dir)
         self.max_size_bytes = max_size_bytes
         self.staging_dir.mkdir(parents=True, exist_ok=True)
@@ -44,7 +51,7 @@ class LocalFileStagingStore:
                 while chunk := stream.read(8192):
                     bytes_written += len(chunk)
                     if bytes_written > self.max_size_bytes:
-                        raise StagingError(f"Upload exceeds maximum allowed size of {self.max_size_bytes} bytes")
+                        raise InputTooLargeError("request_too_large")
                     f.write(chunk)
                     sha256_hash.update(chunk)
             
@@ -52,9 +59,9 @@ class LocalFileStagingStore:
         except Exception as e:
             if staged_path.exists():
                 staged_path.unlink()
-            if isinstance(e, StagingError):
+            if isinstance(e, (InputTooLargeError, StagingError)):
                 raise
-            raise StagingError(f"Failed to stage file: {str(e)}") from e
+            raise StagingError("staging_failed") from e
 
     def get_file_path(self, job_id: str) -> str:
         staged_path = self.staging_dir / job_id

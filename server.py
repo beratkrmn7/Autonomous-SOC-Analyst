@@ -6,7 +6,6 @@ from typing import List, Optional
 import uvicorn
 import os
 import tempfile
-import uuid
 import hashlib
 
 def calculate_file_sha256(filepath: str) -> str:
@@ -41,6 +40,8 @@ from agent.api.security import (  # noqa: E402
     CORS_ALLOWED_HEADERS,
     CORS_ALLOWED_METHODS,
     DeploymentBoundaryMiddleware,
+    INTERNAL_ERROR,
+    REQUEST_TOO_LARGE_ERROR,
     docs_urls,
 )
 
@@ -53,11 +54,7 @@ async def input_too_large_handler(
 ) -> JSONResponse:
     return JSONResponse(
         status_code=413,
-        content={
-            "code": "input_too_large",
-            "message": "The uploaded file exceeds the configured size limit.",
-            "request_id": request.state.request_id,
-        },
+        content=REQUEST_TOO_LARGE_ERROR,
     )
 
 async def unsupported_format_handler(
@@ -108,14 +105,26 @@ async def global_exception_handler(
     request: Request,
     exc: Exception,
 ) -> JSONResponse:
+    import logging
+
+    logging.getLogger(__name__).error(
+        "unhandled_request_error",
+        extra={
+            "request_id": request.state.request_id,
+            "exception_type": type(exc).__name__,
+        },
+    )
     return JSONResponse(
         status_code=500,
-        content={"code": "internal_error", "message": "An internal error occurred.", "request_id": uuid.uuid4().hex}
+        content=INTERNAL_ERROR,
     )
 
-async def secure_save_upload(file: UploadFile) -> str:
+async def secure_save_upload(
+    file: UploadFile,
+    *,
+    max_upload_bytes: int,
+) -> str:
     """Safely saves an uploaded file to a temporary location using chunking and byte limits."""
-    settings = get_settings()
     temp_path = None
     try:
         with tempfile.NamedTemporaryFile(mode="wb", delete=False) as temp_file:
@@ -123,10 +132,10 @@ async def secure_save_upload(file: UploadFile) -> str:
             total_bytes = 0
             while chunk := await file.read(8192):
                 total_bytes += len(chunk)
-                if total_bytes > settings.ingestion.MAX_UPLOAD_BYTES:
+                if total_bytes > max_upload_bytes:
                     temp_file.close()
                     os.remove(temp_path)
-                    raise InputTooLargeError(f"Upload exceeds maximum limit of {settings.ingestion.MAX_UPLOAD_BYTES} bytes.")
+                    raise InputTooLargeError("request_too_large")
                 temp_file.write(chunk)
         return temp_path
     except Exception:
@@ -156,7 +165,10 @@ def readiness_check():
     from agent.config import get_settings
     settings = get_settings()
     if settings.llm_enabled and not settings.groq_api_key:
-        return {"status": "unready", "reason": "Missing API key for LLM"}
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready"},
+        )
     return {"status": "ready"}
 
 @legacy_router.post(
@@ -239,6 +251,7 @@ def analyze_incident(
 @legacy_router.post("/ingest/file")
 async def ingest_file(
     file: UploadFile = File(...),
+    settings: Settings = Depends(get_settings),
     _principal: AuthenticatedPrincipal = Depends(
         require_permission(Permission.JOB_SUBMIT)
     ),
@@ -246,7 +259,10 @@ async def ingest_file(
     """
     Ingest a raw log file and return a metric summary. Does not run triage.
     """
-    temp_path = await secure_save_upload(file)
+    temp_path = await secure_save_upload(
+        file,
+        max_upload_bytes=settings.max_upload_bytes,
+    )
         
     try:
         ingest = IngestionPipeline()
@@ -266,6 +282,7 @@ async def ingest_file(
 @legacy_router.post("/detect/file")
 async def detect_file(
     file: UploadFile = File(...),
+    settings: Settings = Depends(get_settings),
     uow: UnitOfWork = Depends(get_uow),
     _principal: AuthenticatedPrincipal = Depends(
         require_permission(Permission.JOB_SUBMIT)
@@ -276,13 +293,17 @@ async def detect_file(
     """
     from agent.application.analysis_service import AnalysisService
     from agent.application.errors import DuplicateAnalysisError
-    temp_path = await secure_save_upload(file)
+    temp_path = await secure_save_upload(
+        file,
+        max_upload_bytes=settings.max_upload_bytes,
+    )
         
     try:
-        from agent.config import get_settings
         analysis_mode = "detect"
         file_sha256 = calculate_file_sha256(temp_path)
-        idempotency_key = f"{file_sha256}:{get_settings().pipeline_version}:{analysis_mode}"
+        idempotency_key = (
+            f"{file_sha256}:{settings.pipeline_version}:{analysis_mode}"
+        )
         
         svc = AnalysisService(uow=uow)
         try:
@@ -292,7 +313,7 @@ async def detect_file(
                 source_name="api_detect",
                 file_sha256=file_sha256,
                 idempotency_key=idempotency_key,
-                pipeline_version=get_settings().pipeline_version,
+                pipeline_version=settings.pipeline_version,
                 analysis_mode=analysis_mode
             )
         except DuplicateAnalysisError:
@@ -351,12 +372,6 @@ async def detect_file(
             "signals_summary": safe_signals,
             "warnings": det_result.warnings if det_result else []
         }
-    except Exception as e:
-        if isinstance(e, HTTPException):
-            raise e
-        import logging
-        logging.error(f"Error in /detect/file: {type(e).__name__} - {str(e)}", exc_info=False)
-        raise HTTPException(status_code=500, detail="internal_error")
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
@@ -364,6 +379,7 @@ async def detect_file(
 @legacy_router.post("/analyze/file")
 async def analyze_file(
     file: UploadFile = File(...),
+    settings: Settings = Depends(get_settings),
     uow: UnitOfWork = Depends(get_uow),
     _principal: AuthenticatedPrincipal = Depends(
         require_permission(Permission.JOB_SUBMIT)
@@ -374,13 +390,17 @@ async def analyze_file(
     """
     from agent.application.analysis_service import AnalysisService
     from agent.application.errors import DuplicateAnalysisError
-    temp_path = await secure_save_upload(file)
+    temp_path = await secure_save_upload(
+        file,
+        max_upload_bytes=settings.max_upload_bytes,
+    )
         
     try:
-        from agent.config import get_settings
         analysis_mode = "analyze"
         file_sha256 = calculate_file_sha256(temp_path)
-        idempotency_key = f"{file_sha256}:{get_settings().pipeline_version}:{analysis_mode}"
+        idempotency_key = (
+            f"{file_sha256}:{settings.pipeline_version}:{analysis_mode}"
+        )
         
         svc = AnalysisService(uow=uow)
         try:
@@ -390,7 +410,7 @@ async def analyze_file(
                 source_name="api_analyze",
                 file_sha256=file_sha256,
                 idempotency_key=idempotency_key,
-                pipeline_version=get_settings().pipeline_version,
+                pipeline_version=settings.pipeline_version,
                 analysis_mode=analysis_mode
             )
         except DuplicateAnalysisError:
@@ -418,12 +438,6 @@ async def analyze_file(
             "incidents_generated": len(incident_summaries),
             "incidents": incident_summaries
         }
-    except Exception as e:
-        if isinstance(e, HTTPException):
-            raise e
-        import logging
-        logging.error(f"Error in /analyze/file: {type(e).__name__} - {str(e)}", exc_info=False)
-        raise HTTPException(status_code=500, detail="internal_error")
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)

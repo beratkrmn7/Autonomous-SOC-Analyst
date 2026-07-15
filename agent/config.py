@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from agent.ingestion.limits import IngestionLimits
+from agent.ingestion.limits import DEFAULT_MAX_UPLOAD_BYTES, IngestionLimits
 from agent.security.authorization import Role
 
 
@@ -26,7 +26,6 @@ TRUSTED_HOST_PATTERN = re.compile(
     r"^(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*"
     r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
 )
-DEFAULT_MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 DEFAULT_MAX_REQUEST_BODY_BYTES = 52 * 1024 * 1024
 
 
