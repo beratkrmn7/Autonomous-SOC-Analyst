@@ -392,6 +392,97 @@ class RetentionArchiveRun(Base):
     sanitized_error_code = Column(String(64), nullable=True)
 
 
+class RetentionCleanupRun(Base):
+    __tablename__ = "retention_cleanup_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'running', 'completed', 'failed')",
+            name="ck_retention_cleanup_runs_status",
+        ),
+        CheckConstraint(
+            "attempt_count >= 0 AND deleted_record_count >= 0 "
+            "AND protected_record_count >= 0 AND missing_record_count >= 0 "
+            "AND skipped_record_count >= 0",
+            name="ck_retention_cleanup_runs_nonnegative_counts",
+        ),
+        CheckConstraint("version >= 1", name="ck_retention_cleanup_runs_version"),
+        CheckConstraint(
+            "length(manifest_sha256) = 64",
+            name="ck_retention_cleanup_runs_manifest_sha256",
+        ),
+        Index(
+            "ix_retention_cleanup_runs_status_lease",
+            "status",
+            "lease_expires_at",
+        ),
+    )
+
+    cleanup_run_id = Column(String(45), primary_key=True)
+    archive_id = Column(
+        String(45),
+        ForeignKey("retention_archive_runs.archive_id"),
+        nullable=False,
+        unique=True,
+    )
+    status = Column(String(16), nullable=False, default="pending")
+    policy_version = Column(String(32), nullable=False)
+    archive_schema_version = Column(String(64), nullable=False)
+    manifest_sha256 = Column(String(64), nullable=False)
+    archive_as_of = Column(DateTime(timezone=True), nullable=False)
+    archive_snapshot = Column(JSON, nullable=False)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    current_phase = Column(String(32), nullable=False, default="pending")
+    current_entity_type = Column(String(32), nullable=True)
+    lease_owner = Column(String(64), nullable=True)
+    lease_expires_at = Column(DateTime(timezone=True), nullable=True)
+    attempt_count = Column(Integer, nullable=False, default=0)
+    deleted_record_count = Column(Integer, nullable=False, default=0)
+    protected_record_count = Column(Integer, nullable=False, default=0)
+    missing_record_count = Column(Integer, nullable=False, default=0)
+    skipped_record_count = Column(Integer, nullable=False, default=0)
+    sanitized_error_code = Column(String(64), nullable=True)
+    version = Column(Integer, nullable=False, default=1)
+
+
+class RetentionCleanupProgress(Base):
+    __tablename__ = "retention_cleanup_progress"
+    __table_args__ = (
+        CheckConstraint(
+            "entity_type IN ('audit_event', 'incident', 'ingestion_job', "
+            "'detection_signal', 'canonical_event')",
+            name="ck_retention_cleanup_progress_entity_type",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'running', 'completed')",
+            name="ck_retention_cleanup_progress_status",
+        ),
+        CheckConstraint(
+            "scanned_count >= 0 AND deleted_count >= 0 "
+            "AND protected_count >= 0 AND missing_count >= 0 "
+            "AND skipped_count >= 0",
+            name="ck_retention_cleanup_progress_nonnegative_counts",
+        ),
+    )
+
+    cleanup_run_id = Column(
+        String(45),
+        ForeignKey("retention_cleanup_runs.cleanup_run_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    entity_type = Column(String(32), primary_key=True)
+    status = Column(String(16), nullable=False, default="pending")
+    last_recorded_at = Column(DateTime(timezone=True), nullable=True)
+    last_entity_id = Column(String(512), nullable=True)
+    scanned_count = Column(Integer, nullable=False, default=0)
+    deleted_count = Column(Integer, nullable=False, default=0)
+    protected_count = Column(Integer, nullable=False, default=0)
+    missing_count = Column(Integer, nullable=False, default=0)
+    skipped_count = Column(Integer, nullable=False, default=0)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+
 class RetentionHold(Base):
     __tablename__ = "retention_holds"
     __table_args__ = (

@@ -57,6 +57,18 @@ class RetentionPolicy:
             audit_event_days=settings.retention_audit_event_days,
         )
 
+    def cutoffs(self, as_of: datetime) -> RetentionCutoffs:
+        if as_of.tzinfo is None:
+            as_of = as_of.replace(tzinfo=timezone.utc)
+        as_of = as_of.astimezone(timezone.utc)
+        return RetentionCutoffs(
+            canonical_event=as_of - timedelta(days=self.canonical_event_days),
+            detection_signal=as_of - timedelta(days=self.detection_signal_days),
+            ingestion_job=as_of - timedelta(days=self.completed_job_days),
+            incident=as_of - timedelta(days=self.terminal_incident_days),
+            audit_event=as_of - timedelta(days=self.audit_event_days),
+        )
+
 
 @dataclass(frozen=True)
 class RetentionCutoffs:
@@ -116,18 +128,7 @@ class RetentionPlanner:
         if generated_at.tzinfo is None:
             generated_at = generated_at.replace(tzinfo=timezone.utc)
         generated_at = generated_at.astimezone(timezone.utc)
-        cutoffs = RetentionCutoffs(
-            canonical_event=generated_at
-            - timedelta(days=self._policy.canonical_event_days),
-            detection_signal=generated_at
-            - timedelta(days=self._policy.detection_signal_days),
-            ingestion_job=generated_at
-            - timedelta(days=self._policy.completed_job_days),
-            incident=generated_at
-            - timedelta(days=self._policy.terminal_incident_days),
-            audit_event=generated_at
-            - timedelta(days=self._policy.audit_event_days),
-        )
+        cutoffs = self._policy.cutoffs(generated_at)
         return RetentionPlan(
             policy_version=self._policy.version,
             generated_at=generated_at,

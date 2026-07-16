@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import timedelta
 import gzip
 import hashlib
 import json
@@ -16,8 +17,10 @@ from agent.archive.schemas import (
     ArchiveManifestV1,
     canonical_json_bytes,
 )
+from agent.persistence.orm_models import AuditEvent
 from tests.archive.conftest import (
     ARCHIVE_ID,
+    NOW,
     SECRETS,
     make_environment,
     seed_archive_graph,
@@ -295,5 +298,31 @@ def test_duplicate_entity_is_rejected_with_bounded_disk_index(archive_env) -> No
     with pytest.raises(
         ArchiveIntegrityError,
         match="archive_record_duplicate",
+    ):
+        ArchiveVerifier(archive_env.store).verify(ARCHIVE_ID)
+
+
+def test_candidate_cursor_order_must_be_strictly_increasing(archive_env) -> None:
+    seed_archive_graph(archive_env)
+    with archive_env.session_factory() as session:
+        session.add(
+            AuditEvent(
+                audit_event_id="audit-second-old-candidate",
+                timestamp=NOW - timedelta(days=499),
+                event_type="old",
+                action="old",
+            )
+        )
+        session.commit()
+    archive_env.service().create()
+    _rewrite_payload(
+        archive_env,
+        "audit_events.ndjson.gz",
+        lambda lines: list(reversed(lines)),
+    )
+
+    with pytest.raises(
+        ArchiveIntegrityError,
+        match="archive_candidate_order_invalid",
     ):
         ArchiveVerifier(archive_env.store).verify(ARCHIVE_ID)

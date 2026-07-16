@@ -175,6 +175,10 @@ class Settings(BaseSettings):
         "retention-archive/v1"
     ] = "retention-archive/v1"
 
+    # Phase 5D.2C: verified, bounded retention cleanup.
+    retention_cleanup_batch_size: int = Field(default=500, ge=1, le=5_000)
+    retention_cleanup_lease_seconds: int = Field(default=300, ge=30, le=86_400)
+
     llm_enabled: bool = True
     llm_provider: Literal["groq"] = "groq"
     llm_model: str = "llama-3.3-70b-versatile"
