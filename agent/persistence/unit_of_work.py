@@ -7,6 +7,7 @@ from agent.persistence.repositories import (
     CanonicalEventRepository, DetectionSignalRepository, TriageRunRepository,
     EvidenceRepository, ReportRepository
 )
+from agent.persistence.retention_repository import RetentionRepository
 
 class UnitOfWork:
     def __init__(self, session_factory=None):
@@ -28,6 +29,7 @@ class UnitOfWork:
         self.triage_runs = TriageRunRepository(self.session)
         self.evidence = EvidenceRepository(self.session)
         self.reports = ReportRepository(self.session)
+        self.retention = RetentionRepository(self.session)
         return self
         
     def __exit__(self, exc_type, exc_val, traceback):
