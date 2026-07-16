@@ -50,6 +50,84 @@ class ArchiveVerificationResult:
 
 
 @dataclass(frozen=True)
+class ArchivePayloadSnapshot:
+    filename: str
+    sha256: str
+    compressed_bytes: int
+
+
+@dataclass(frozen=True)
+class ArchiveStabilitySnapshot:
+    manifest_sha256: str
+    payloads: tuple[ArchivePayloadSnapshot, ...]
+
+    @classmethod
+    def from_verification(
+        cls,
+        verification: ArchiveVerificationResult,
+    ) -> ArchiveStabilitySnapshot:
+        return cls(
+            manifest_sha256=verification.manifest_sha256,
+            payloads=tuple(
+                ArchivePayloadSnapshot(
+                    filename=payload.filename,
+                    sha256=payload.sha256,
+                    compressed_bytes=payload.compressed_bytes,
+                )
+                for payload in verification.manifest.payloads
+            ),
+        )
+
+    @classmethod
+    def from_dict(cls, value: object) -> ArchiveStabilitySnapshot:
+        if not isinstance(value, dict):
+            raise ArchiveIntegrityError("archive_snapshot_invalid")
+        manifest_sha256 = value.get("manifest_sha256")
+        raw_payloads = value.get("payloads")
+        if not isinstance(manifest_sha256, str) or not SHA256_PATTERN.fullmatch(
+            manifest_sha256
+        ):
+            raise ArchiveIntegrityError("archive_snapshot_invalid")
+        if not isinstance(raw_payloads, list):
+            raise ArchiveIntegrityError("archive_snapshot_invalid")
+        payloads: list[ArchivePayloadSnapshot] = []
+        for raw in raw_payloads:
+            if not isinstance(raw, dict):
+                raise ArchiveIntegrityError("archive_snapshot_invalid")
+            filename = raw.get("filename")
+            sha256 = raw.get("sha256")
+            compressed_bytes = raw.get("compressed_bytes")
+            if (
+                filename not in EXPECTED_PAYLOAD_FILES
+                or not isinstance(sha256, str)
+                or not SHA256_PATTERN.fullmatch(sha256)
+                or isinstance(compressed_bytes, bool)
+                or not isinstance(compressed_bytes, int)
+                or compressed_bytes < 0
+            ):
+                raise ArchiveIntegrityError("archive_snapshot_invalid")
+            payloads.append(
+                ArchivePayloadSnapshot(filename, sha256, compressed_bytes)
+            )
+        if tuple(payload.filename for payload in payloads) != EXPECTED_PAYLOAD_FILES:
+            raise ArchiveIntegrityError("archive_snapshot_invalid")
+        return cls(manifest_sha256, tuple(payloads))
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "manifest_sha256": self.manifest_sha256,
+            "payloads": [
+                {
+                    "filename": payload.filename,
+                    "sha256": payload.sha256,
+                    "compressed_bytes": payload.compressed_bytes,
+                }
+                for payload in self.payloads
+            ],
+        }
+
+
+@dataclass(frozen=True)
 class ArchiveWriteResult:
     manifest: ArchiveManifestV1
     manifest_sha256: str
@@ -204,6 +282,33 @@ class ArchiveVerifier:
             duplicate_database.close()
         return ArchiveVerificationResult(archive_id, manifest, checksum)
 
+    def assert_stable(
+        self,
+        archive_id: str,
+        snapshot: ArchiveStabilitySnapshot,
+    ) -> None:
+        expected_files = set(EXPECTED_PAYLOAD_FILES) | set(ARCHIVE_METADATA_FILES)
+        if set(self._store.list_files(archive_id)) != expected_files:
+            raise ArchiveIntegrityError("archive_file_set_changed")
+        manifest_bytes = self._store.read_small_file(archive_id, MANIFEST_FILENAME)
+        sidecar = self._store.read_small_file(
+            archive_id,
+            MANIFEST_CHECKSUM_FILENAME,
+        )
+        try:
+            sidecar_checksum = sidecar.decode("ascii").strip()
+        except UnicodeDecodeError as exc:
+            raise ArchiveIntegrityError("archive_manifest_changed") from exc
+        if (
+            sidecar_checksum != snapshot.manifest_sha256
+            or hashlib.sha256(manifest_bytes).hexdigest()
+            != snapshot.manifest_sha256
+        ):
+            raise ArchiveIntegrityError("archive_manifest_changed")
+        for payload in snapshot.payloads:
+            if self._store.file_size(archive_id, payload.filename) != payload.compressed_bytes:
+                raise ArchiveIntegrityError("archive_payload_changed")
+
     def _verify_payload(
         self,
         archive_id: str,
@@ -239,6 +344,7 @@ class ArchiveVerifier:
         uncompressed_bytes = 0
         oldest: datetime | None = None
         newest: datetime | None = None
+        previous_candidate_cursor: tuple[datetime, str] | None = None
         try:
             with self._store.open_payload_reader(
                 archive_id,
@@ -276,6 +382,16 @@ class ArchiveVerifier:
                         else:
                             dependency_count += 1
                         timestamp = utc_datetime(record.recorded_at)
+                        if payload.filename != "dependent_records.ndjson.gz":
+                            cursor = (timestamp, record.entity_id)
+                            if (
+                                previous_candidate_cursor is not None
+                                and cursor <= previous_candidate_cursor
+                            ):
+                                raise ArchiveIntegrityError(
+                                    "archive_candidate_order_invalid"
+                                )
+                            previous_candidate_cursor = cursor
                         oldest = timestamp if oldest is None else min(oldest, timestamp)
                         newest = timestamp if newest is None else max(newest, timestamp)
         except ArchiveIntegrityError:

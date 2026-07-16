@@ -191,7 +191,12 @@ class ArchiveExportRepository:
 
         yield from self._single_key_batches(
             "triage_run",
-            select(TriageRun).where(TriageRun.incident_id.in_(candidate_incidents)),
+            select(TriageRun).where(
+                or_(
+                    TriageRun.incident_id.in_(candidate_incidents),
+                    TriageRun.job_id.in_(candidate_jobs),
+                )
+            ),
             TriageRun.id,
             "id",
             batch_size,
@@ -199,7 +204,10 @@ class ArchiveExportRepository:
         yield from self._single_key_batches(
             "evidence_item",
             select(EvidenceItem).where(
-                EvidenceItem.incident_id.in_(candidate_incidents)
+                or_(
+                    EvidenceItem.incident_id.in_(candidate_incidents),
+                    EvidenceItem.job_id.in_(candidate_jobs),
+                )
             ),
             EvidenceItem.id,
             "id",
@@ -207,7 +215,12 @@ class ArchiveExportRepository:
         )
         yield from self._single_key_batches(
             "report",
-            select(Report).where(Report.incident_id.in_(candidate_incidents)),
+            select(Report).where(
+                or_(
+                    Report.incident_id.in_(candidate_incidents),
+                    Report.job_id.in_(candidate_jobs),
+                )
+            ),
             Report.id,
             "id",
             batch_size,
@@ -251,6 +264,7 @@ class ArchiveExportRepository:
             "incident_id",
             candidate_jobs,
             batch_size,
+            related_candidates=candidate_incidents,
         )
 
     def _candidate_ids(
@@ -322,14 +336,20 @@ class ArchiveExportRepository:
         related_column_name: str,
         candidate_jobs: Select[Any],
         batch_size: int,
+        *,
+        related_candidates: Select[Any] | None = None,
     ) -> Iterator[ArchiveDependencyBatch]:
         related_column = table.c[related_column_name]
         last_job_id: str | None = None
         last_related_id: str | None = None
         while True:
-            statement = select(table.c.job_id, related_column).where(
-                table.c.job_id.in_(candidate_jobs)
-            )
+            membership = table.c.job_id.in_(candidate_jobs)
+            if related_candidates is not None:
+                membership = or_(
+                    membership,
+                    related_column.in_(related_candidates),
+                )
+            statement = select(table.c.job_id, related_column).where(membership)
             if last_job_id is not None and last_related_id is not None:
                 statement = statement.where(
                     or_(
