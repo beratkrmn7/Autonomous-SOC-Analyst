@@ -55,6 +55,7 @@ def make_settings(**overrides) -> Settings:
         "app_env": "test",
         "auth_mode": "disabled",
         "llm_enabled": False,
+        "rate_limiting_enabled": True,
         "rate_limit_key_secret": RATE_SECRET,
         "search_cursor_secret": SEARCH_SECRET,
     }
