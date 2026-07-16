@@ -1,3 +1,5 @@
+"""Database search filtering coverage with a CI-unique module name."""
+
 from datetime import timedelta
 
 import pytest
