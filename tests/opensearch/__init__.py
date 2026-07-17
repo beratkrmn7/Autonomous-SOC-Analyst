@@ -1,0 +1,1 @@
+"""OpenSearch foundation tests."""
