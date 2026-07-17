@@ -15,6 +15,8 @@ from agent.application.oidc_authentication import OidcJwtAuthenticationService
 from agent.persistence.unit_of_work import UnitOfWork
 from agent.persistence.database import create_engine_factory, create_session_factory
 from agent.config import Settings, get_settings
+from agent.opensearch.client import OpenSearchClientFactory
+from agent.opensearch.manager import OpenSearchHealthService
 from agent.api.rate_limiting import (
     remember_rate_limit_decision,
     route_identifier,
@@ -62,6 +64,13 @@ def get_dispatcher():
 
 def get_rate_limit_manager(request: Request) -> RateLimitManager:
     return request.app.state.rate_limit_manager
+
+
+def get_opensearch_health_service(
+    opensearch_settings: Settings = Depends(get_settings),
+) -> OpenSearchHealthService:
+    factory = OpenSearchClientFactory(opensearch_settings)
+    return OpenSearchHealthService(opensearch_settings, factory.create)
 
 
 @lru_cache(maxsize=8)

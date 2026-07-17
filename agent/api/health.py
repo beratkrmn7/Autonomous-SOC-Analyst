@@ -4,12 +4,14 @@ from fastapi import APIRouter, Depends, Response
 from sqlalchemy import text
 
 from agent.api.deps import (
+    get_opensearch_health_service,
     get_optional_oidc_authentication_service,
     get_rate_limit_manager,
     get_uow,
 )
 from agent.application.oidc_authentication import OidcJwtAuthenticationService
 from agent.config import Settings, get_settings
+from agent.opensearch.manager import OpenSearchHealthService
 from agent.persistence.orm_models import WorkerHeartbeat
 from agent.persistence.unit_of_work import UnitOfWork
 from agent.security.abuse_protection import RateLimitManager
@@ -30,6 +32,9 @@ async def ready(
     uow: UnitOfWork = Depends(get_uow),
     oidc_service: OidcJwtAuthenticationService | None = Depends(
         get_optional_oidc_authentication_service
+    ),
+    opensearch_health: OpenSearchHealthService = Depends(
+        get_opensearch_health_service
     ),
 ):
     components: dict[str, str] = {"database": "up"}
@@ -62,6 +67,12 @@ async def ready(
         components["rate_limiter"] = "up"
         if not rate_limit_manager.check_health():
             components["rate_limiter"] = "down"
+            status = "not_ready"
+
+    if settings.opensearch_enabled:
+        search_health = opensearch_health.check()
+        components["opensearch"] = search_health.status
+        if settings.opensearch_required and search_health.status != "healthy":
             status = "not_ready"
 
     # 2. Check Celery/Redis if enabled

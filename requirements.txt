@@ -15,3 +15,4 @@ celery[redis]>=5.6,<5.7
 redis>=5,<7
 PyJWT[crypto]>=2.13,<3
 httpx>=0.28,<1
+opensearch-py>=3.2,<4
