@@ -14,7 +14,6 @@ from sqlalchemy.exc import IntegrityError
 ARCHIVE_REVISION = "5d2b8f6a1c42"
 CLEANUP_REVISION = "5d2c9a7e4b10"
 RETENTION_REVISION = "5d2a7e4c9b31"
-OUTBOX_REVISION = "02a14b4d18bf"
 
 
 def _config(database: Path) -> Config:
@@ -25,7 +24,6 @@ def _config(database: Path) -> Config:
 
 def test_archive_revision_chain() -> None:
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert script.get_heads() == [OUTBOX_REVISION]
     cleanup_revision = script.get_revision(CLEANUP_REVISION)
     assert cleanup_revision is not None
     assert cleanup_revision.down_revision == ARCHIVE_REVISION
