@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import suppress
 
 from agent.config import Settings
 from agent.opensearch.mappings import (
@@ -12,6 +13,7 @@ from agent.opensearch.models import (
     OpenSearchAliasState,
     OpenSearchBootstrapPlan,
     OpenSearchBootstrapResult,
+    OpenSearchClusterInfo,
     OpenSearchFoundationError,
     OpenSearchGateway,
     OpenSearchHealthResult,
@@ -45,6 +47,7 @@ class OpenSearchFoundationManager:
         )
 
     def bootstrap(self) -> OpenSearchBootstrapResult:
+        require_supported_cluster_version(self._gateway.cluster_info())
         initial_plan = self.plan()
         _require_safe_plan(initial_plan)
 
@@ -168,13 +171,15 @@ class OpenSearchHealthService:
             gateway = self._gateway_factory()
             cluster = gateway.cluster_info()
             cluster_version = f"{cluster.major_version}.{cluster.minor_version}"
-            if cluster.major_version not in SUPPORTED_CLUSTER_MAJOR_VERSIONS:
+            try:
+                require_supported_cluster_version(cluster)
+            except OpenSearchFoundationError as exc:
                 return OpenSearchHealthResult(
                     status="incompatible",
                     required=self._settings.opensearch_required,
                     cluster_version=cluster_version,
                     bootstrap_compatible=False,
-                    error_code="opensearch_cluster_version_incompatible",
+                    error_code=exc.code,
                 )
             plan = OpenSearchFoundationManager(self._settings, gateway).plan()
             if plan.has_drift:
@@ -217,10 +222,8 @@ class OpenSearchHealthService:
             )
         finally:
             if gateway is not None:
-                try:
+                with suppress(Exception):
                     gateway.close()
-                except OpenSearchFoundationError:
-                    pass
 
 
 def _index_status(
@@ -289,3 +292,10 @@ def _overall_status(
 def _require_safe_plan(plan: OpenSearchBootstrapPlan) -> None:
     if plan.has_drift:
         raise OpenSearchFoundationError("opensearch_bootstrap_drift_detected")
+
+
+def require_supported_cluster_version(cluster: OpenSearchClusterInfo) -> None:
+    if cluster.major_version not in SUPPORTED_CLUSTER_MAJOR_VERSIONS:
+        raise OpenSearchFoundationError(
+            "opensearch_cluster_version_incompatible"
+        )

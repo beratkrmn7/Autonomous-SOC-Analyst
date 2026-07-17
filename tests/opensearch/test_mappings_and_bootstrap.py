@@ -146,6 +146,45 @@ def test_bootstrap_creates_missing_resources_then_is_idempotent() -> None:
     assert len(gateway.alias_calls) == 1
 
 
+@pytest.mark.parametrize("major_version", [1, 2, 3])
+def test_bootstrap_accepts_supported_cluster_major_versions(
+    major_version: int,
+) -> None:
+    gateway = FakeOpenSearchGateway(
+        cluster=OpenSearchClusterInfo(major_version, 0)
+    )
+    result = OpenSearchFoundationManager(settings(), gateway).bootstrap()
+    assert result.plan.all_ready is True
+    assert len(gateway.create_calls) == 3
+    assert len(gateway.alias_calls) == 1
+
+
+def test_bootstrap_rejects_unsupported_cluster_before_any_write() -> None:
+    gateway = FakeOpenSearchGateway(cluster=OpenSearchClusterInfo(4, 0))
+
+    with pytest.raises(OpenSearchFoundationError) as caught:
+        OpenSearchFoundationManager(settings(), gateway).bootstrap()
+
+    assert caught.value.code == "opensearch_cluster_version_incompatible"
+    assert gateway.create_calls == []
+    assert gateway.alias_calls == []
+
+
+def test_bootstrap_cluster_info_failure_never_writes() -> None:
+    class FailingClusterGateway(FakeOpenSearchGateway):
+        def cluster_info(self) -> OpenSearchClusterInfo:
+            raise OpenSearchFoundationError("opensearch_cluster_info_failed")
+
+    gateway = FailingClusterGateway()
+
+    with pytest.raises(OpenSearchFoundationError) as caught:
+        OpenSearchFoundationManager(settings(), gateway).bootstrap()
+
+    assert caught.value.code == "opensearch_cluster_info_failed"
+    assert gateway.create_calls == []
+    assert gateway.alias_calls == []
+
+
 def test_bootstrap_adds_only_missing_aliases() -> None:
     configured = settings()
     gateway = FakeOpenSearchGateway()

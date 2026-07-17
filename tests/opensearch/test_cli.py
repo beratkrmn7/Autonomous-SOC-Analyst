@@ -3,9 +3,13 @@ from __future__ import annotations
 from io import StringIO
 import json
 
+import pytest
+
+import agent.maintenance.opensearch as opensearch_cli
 from agent.config import Settings
 from agent.maintenance.opensearch import main
 from agent.opensearch.mappings import build_index_definitions
+from agent.opensearch.models import OpenSearchClusterInfo
 from tests.opensearch.fakes import FakeOpenSearchGateway, seed_ready_definition
 
 
@@ -158,3 +162,149 @@ def test_bootstrap_drift_error_is_sanitized() -> None:
         "error_code": "opensearch_bootstrap_drift_detected"
     }
     assert "never-print-this-password" not in error.getvalue()
+
+
+def test_bootstrap_unsupported_cluster_is_sanitized_and_never_writes() -> None:
+    output = StringIO()
+    error = StringIO()
+    gateway = FakeOpenSearchGateway(
+        cluster=OpenSearchClusterInfo(4, 99)
+    )
+
+    exit_code = main(
+        ["bootstrap"],
+        settings=settings(),
+        gateway_factory=lambda: gateway,
+        stdout=output,
+        stderr=error,
+    )
+
+    assert exit_code != 0
+    assert output.getvalue() == ""
+    assert json.loads(error.getvalue()) == {
+        "error_code": "opensearch_cluster_version_incompatible"
+    }
+    assert "4.99" not in error.getvalue()
+    assert "never-print-this-password" not in error.getvalue()
+    assert gateway.create_calls == []
+    assert gateway.alias_calls == []
+    assert gateway.closed is True
+
+
+@pytest.mark.parametrize("command", ["check", "plan", "bootstrap"])
+def test_settings_failure_is_generic_for_every_command(
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+) -> None:
+    output = StringIO()
+    error = StringIO()
+    secret_host = "https://private-search.example.test:9200"
+
+    def fail_settings() -> Settings:
+        raise RuntimeError(secret_host)
+
+    monkeypatch.setattr(opensearch_cli, "get_settings", fail_settings)
+    exit_code = main([command], stdout=output, stderr=error)
+
+    assert exit_code != 0
+    assert output.getvalue() == ""
+    assert json.loads(error.getvalue()) == {
+        "error_code": "opensearch_configuration_invalid"
+    }
+    assert secret_host not in error.getvalue()
+    assert "Traceback" not in error.getvalue()
+
+
+def test_settings_failure_never_exposes_certificate_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    certificate_path = r"C:\private\certificates\client.pem"
+
+    def fail_settings() -> Settings:
+        raise RuntimeError(certificate_path)
+
+    monkeypatch.setattr(opensearch_cli, "get_settings", fail_settings)
+    error = StringIO()
+    assert main(["check"], stderr=error) != 0
+    assert certificate_path not in error.getvalue()
+    assert json.loads(error.getvalue()) == {
+        "error_code": "opensearch_configuration_invalid"
+    }
+
+
+def test_client_factory_initialization_failure_is_generic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_path = r"C:\private\opensearch-ca.pem"
+
+    def fail_factory(_configured: Settings) -> object:
+        raise RuntimeError(private_path)
+
+    monkeypatch.setattr(opensearch_cli, "OpenSearchClientFactory", fail_factory)
+    error = StringIO()
+    assert main(["plan"], settings=settings(), stderr=error) != 0
+    assert json.loads(error.getvalue()) == {
+        "error_code": "opensearch_configuration_invalid"
+    }
+    assert private_path not in error.getvalue()
+    assert "Traceback" not in error.getvalue()
+
+
+def test_gateway_is_closed_when_plan_fails() -> None:
+    class FailingGateway(FakeOpenSearchGateway):
+        def index_state(self, index_name: str):
+            raise RuntimeError("https://private-search.example.test:9200")
+
+    gateway = FailingGateway()
+    error = StringIO()
+    exit_code = main(
+        ["plan"],
+        settings=settings(),
+        gateway_factory=lambda: gateway,
+        stderr=error,
+    )
+    assert exit_code != 0
+    assert gateway.closed is True
+    assert json.loads(error.getvalue()) == {
+        "error_code": "opensearch_maintenance_failed"
+    }
+    assert "private-search.example.test" not in error.getvalue()
+
+
+def test_gateway_close_failure_does_not_override_success() -> None:
+    class CloseFailingGateway(FakeOpenSearchGateway):
+        def close(self) -> None:
+            self.closed = True
+            raise RuntimeError("private close failure")
+
+    gateway = CloseFailingGateway()
+    output = StringIO()
+    assert main(
+        ["plan"],
+        settings=settings(),
+        gateway_factory=lambda: gateway,
+        stdout=output,
+    ) == 0
+    assert gateway.closed is True
+    assert json.loads(output.getvalue())["items"][0]["status"] == "missing"
+
+
+def test_check_close_failure_does_not_override_healthy_result() -> None:
+    class CloseFailingGateway(FakeOpenSearchGateway):
+        def close(self) -> None:
+            self.closed = True
+            raise RuntimeError("private close failure")
+
+    configured = settings()
+    gateway = CloseFailingGateway()
+    for definition in build_index_definitions(configured):
+        seed_ready_definition(gateway, definition)
+    output = StringIO()
+    assert main(
+        ["check"],
+        settings=configured,
+        gateway_factory=lambda: gateway,
+        stdout=output,
+    ) == 0
+    assert gateway.closed is True
+    assert json.loads(output.getvalue())["status"] == "healthy"

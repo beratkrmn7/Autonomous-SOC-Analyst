@@ -52,29 +52,34 @@ def main(
     args = _parser().parse_args(argv)
     output = stdout or sys.stdout
     error_output = stderr or sys.stderr
-    active_settings = settings or get_settings()
-    make_gateway = gateway_factory or OpenSearchClientFactory(
-        active_settings
-    ).create
-
-    if args.command == "check":
-        health_result = OpenSearchHealthService(
-            active_settings,
-            make_gateway,
-        ).check()
-        _write_json(asdict(health_result), output)
-        return (
-            0
-            if health_result.status in {"disabled", "healthy", "degraded"}
-            else 1
-        )
-
-    if not active_settings.opensearch_enabled:
-        _write_json({"error_code": "opensearch_disabled"}, error_output)
-        return 2
-
     gateway: OpenSearchGateway | None = None
+    configuration_ready = False
     try:
+        active_settings = settings or get_settings()
+        make_gateway: Callable[[], OpenSearchGateway]
+        if gateway_factory is None:
+            client_factory = OpenSearchClientFactory(active_settings)
+            make_gateway = client_factory.create
+        else:
+            make_gateway = gateway_factory
+        configuration_ready = True
+
+        if args.command == "check":
+            health_result = OpenSearchHealthService(
+                active_settings,
+                make_gateway,
+            ).check()
+            _write_json(asdict(health_result), output)
+            return (
+                0
+                if health_result.status in {"disabled", "healthy", "degraded"}
+                else 1
+            )
+
+        if not active_settings.opensearch_enabled:
+            _write_json({"error_code": "opensearch_disabled"}, error_output)
+            return 2
+
         gateway = make_gateway()
         manager = OpenSearchFoundationManager(active_settings, gateway)
         if args.command == "plan":
@@ -85,17 +90,28 @@ def main(
         _write_json(asdict(bootstrap_result), output)
         return 0
     except OpenSearchFoundationError as exc:
-        _write_json({"error_code": exc.code}, error_output)
+        error_code = (
+            exc.code
+            if configuration_ready
+            else "opensearch_configuration_invalid"
+        )
+        _write_json({"error_code": error_code}, error_output)
         return 2
     except Exception:
         _write_json(
-            {"error_code": "opensearch_maintenance_failed"},
+            {
+                "error_code": (
+                    "opensearch_maintenance_failed"
+                    if configuration_ready
+                    else "opensearch_configuration_invalid"
+                )
+            },
             error_output,
         )
         return 1
     finally:
         if gateway is not None:
-            with suppress(OpenSearchFoundationError):
+            with suppress(Exception):
                 gateway.close()
 
 
