@@ -231,6 +231,7 @@ class Settings(BaseSettings):
     opensearch_number_of_replicas: int = Field(default=0, ge=0, le=20)
     opensearch_mapping_total_fields_limit: int = Field(default=256, ge=32, le=1_000)
     opensearch_bootstrap_on_startup: bool = False
+    opensearch_outbox_max_payload_bytes: int = Field(default=65536, ge=1024, le=10_485_760)
 
     llm_enabled: bool = True
     llm_provider: Literal["groq"] = "groq"

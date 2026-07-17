@@ -128,6 +128,29 @@ def update_status(
                 request_id=request.state.request_id,
                 details={},
             )
+            
+            from agent.config import get_settings
+            from agent.opensearch.documents import incident_document
+            from datetime import datetime, timezone
+            
+            settings = get_settings()
+            if settings.opensearch_enabled:
+                has_report = len(incident.reports) > 0 if hasattr(incident, 'reports') and incident.reports else False
+                has_val_ev = any(
+                    ev.validation_status == "validated"
+                    for run in getattr(incident, 'triage_runs', [])
+                    for ev in getattr(run, 'evidence_items', [])
+                )
+                doc = incident_document(
+                    incident,
+                    schema_version=settings.opensearch_schema_version,
+                    indexed_at=datetime.now(timezone.utc),
+                    job_ids=tuple([j.id for j in incident.jobs]) if hasattr(incident, 'jobs') else (),
+                    has_report=has_report,
+                    has_validated_evidence=has_val_ev
+                )
+                uow.search_index_outbox.enqueue_upsert(doc)
+                
             uow.commit()
         except InvalidTransitionError as e:
             raise HTTPException(status_code=409, detail={"code": "invalid_incident_transition", "message": str(e)})

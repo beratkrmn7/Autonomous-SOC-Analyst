@@ -570,3 +570,53 @@ class WorkerHeartbeat(Base):
     created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False)
 
+class SearchIndexOutbox(Base):
+    __tablename__ = "search_index_outbox"
+    __table_args__ = (
+        CheckConstraint(
+            "entity_type IN ('canonical_event', 'detection_signal', 'incident')",
+            name="ck_search_index_outbox_entity_type",
+        ),
+        CheckConstraint(
+            "operation IN ('upsert')",
+            name="ck_search_index_outbox_operation",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'processing', 'retry', 'completed', 'failed')",
+            name="ck_search_index_outbox_status",
+        ),
+        CheckConstraint(
+            "attempt_count >= 0 AND payload_size_bytes >= 0",
+            name="ck_search_index_outbox_nonnegative",
+        ),
+        CheckConstraint(
+            "document_version > 0",
+            name="ck_search_index_outbox_document_version",
+        ),
+        UniqueConstraint("deduplication_key", name="uq_search_index_outbox_deduplication"),
+        Index("ix_search_index_outbox_status_available", "status", "available_at"),
+        Index("ix_search_index_outbox_lease_expires", "lease_expires_at"),
+        Index("ix_search_index_outbox_entity_lookup", "entity_type", "entity_id"),
+    )
+
+    outbox_id = Column(String(45), primary_key=True)
+    entity_type = Column(String(32), nullable=False)
+    entity_id = Column(String(256), nullable=False)
+    operation = Column(String(16), nullable=False, default="upsert")
+    schema_version = Column(String(64), nullable=False)
+    document_version = Column(Integer, nullable=False)
+    deduplication_key = Column(String(256), nullable=False)
+    payload = Column(JSON, nullable=False)
+    payload_sha256 = Column(String(64), nullable=False)
+    payload_size_bytes = Column(Integer, nullable=False)
+    status = Column(String(16), nullable=False, default="pending")
+    available_at = Column(DateTime(timezone=True), nullable=False, default=func.now())
+    attempt_count = Column(Integer, nullable=False, default=0)
+    lease_owner = Column(String(64), nullable=True)
+    lease_expires_at = Column(DateTime(timezone=True), nullable=True)
+    last_error_code = Column(String(64), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=func.now(), onupdate=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    version = Column(Integer, nullable=False, default=1)
+

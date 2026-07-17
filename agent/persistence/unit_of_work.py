@@ -13,6 +13,7 @@ from agent.persistence.archive_repository import (
     RetentionArchiveRunRepository,
 )
 from agent.persistence.cleanup_repository import RetentionCleanupRepository
+from agent.persistence.outbox_repository import SearchIndexOutboxRepository
 
 class UnitOfWork:
     def __init__(self, session_factory=None):
@@ -38,6 +39,7 @@ class UnitOfWork:
         self.archive_exports = ArchiveExportRepository(self.session, self.retention)
         self.archive_runs = RetentionArchiveRunRepository(self.session)
         self.cleanup = RetentionCleanupRepository(self.session)
+        self.search_index_outbox = SearchIndexOutboxRepository(self.session)
         return self
         
     def __exit__(self, exc_type, exc_val, traceback):
