@@ -1,7 +1,7 @@
-from typing import Optional
+from typing import Any
 from sqlalchemy.orm import Session
 from agent.persistence.database import create_engine_factory, create_session_factory
-from agent.config import get_settings
+from agent.config import Settings, get_settings
 from agent.persistence.repositories import (
     ApiCredentialRepository, IncidentRepository, AuditEventRepository, IngestionJobRepository,
     CanonicalEventRepository, DetectionSignalRepository, TriageRunRepository,
@@ -16,13 +16,19 @@ from agent.persistence.cleanup_repository import RetentionCleanupRepository
 from agent.persistence.outbox_repository import SearchIndexOutboxRepository
 
 class UnitOfWork:
-    def __init__(self, session_factory=None):
+    def __init__(
+        self,
+        session_factory: Any = None,
+        *,
+        settings: Settings | None = None,
+    ):
+        self.settings = settings or get_settings()
         if not session_factory:
             # Default to settings-based factory if none provided
-            engine = create_engine_factory(get_settings())
+            engine = create_engine_factory(self.settings)
             session_factory = create_session_factory(engine)
         self.session_factory = session_factory
-        self.session: Optional[Session] = None
+        self.session: Session | None = None
         
     def __enter__(self):
         self.session = self.session_factory()
@@ -39,7 +45,14 @@ class UnitOfWork:
         self.archive_exports = ArchiveExportRepository(self.session, self.retention)
         self.archive_runs = RetentionArchiveRunRepository(self.session)
         self.cleanup = RetentionCleanupRepository(self.session)
-        self.search_index_outbox = SearchIndexOutboxRepository(self.session)
+        self.search_index_outbox = SearchIndexOutboxRepository(
+            self.session,
+            max_payload_bytes=self.settings.opensearch_outbox_max_payload_bytes,
+            enqueue_chunk_size=self.settings.opensearch_outbox_enqueue_chunk_size,
+            max_claim_batch_size=(
+                self.settings.opensearch_outbox_max_claim_batch_size
+            ),
+        )
         return self
         
     def __exit__(self, exc_type, exc_val, traceback):

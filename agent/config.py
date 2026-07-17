@@ -232,6 +232,10 @@ class Settings(BaseSettings):
     opensearch_mapping_total_fields_limit: int = Field(default=256, ge=32, le=1_000)
     opensearch_bootstrap_on_startup: bool = False
     opensearch_outbox_max_payload_bytes: int = Field(default=65536, ge=1024, le=10_485_760)
+    opensearch_outbox_enqueue_chunk_size: int = Field(default=250, ge=1, le=1_000)
+    opensearch_outbox_claim_batch_size: int = Field(default=100, ge=1, le=1_000)
+    opensearch_outbox_lease_seconds: int = Field(default=300, ge=1, le=86_400)
+    opensearch_outbox_max_claim_batch_size: int = Field(default=1_000, ge=1, le=5_000)
 
     llm_enabled: bool = True
     llm_provider: Literal["groq"] = "groq"
@@ -396,6 +400,11 @@ class Settings(BaseSettings):
             raise ValueError("opensearch_schema_version_invalid")
         if self.opensearch_bootstrap_on_startup:
             raise ValueError("opensearch_bootstrap_on_startup_unsupported")
+        if (
+            self.opensearch_outbox_claim_batch_size
+            > self.opensearch_outbox_max_claim_batch_size
+        ):
+            raise ValueError("opensearch_outbox_claim_batch_size_exceeds_maximum")
 
         if self.app_env == "production":
             if self.auth_mode == "disabled":

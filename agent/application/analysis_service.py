@@ -1,7 +1,20 @@
 import logging
+import uuid
 from functools import partial
 from typing import Optional, List, Dict, Any, cast
+from agent.application.search_outbox import SearchOutboxService
 from agent.persistence.unit_of_work import UnitOfWork
+from agent.persistence.lifecycle import IncidentLifecycle
+from agent.persistence.mappers import DataMapper
+from agent.persistence.orm_models import (
+    CanonicalEvent,
+    DetectionSignal,
+    EvidenceItem,
+    Incident,
+    IngestionJob,
+    Report,
+    TriageRun,
+)
 from agent.application.models import AnalysisResult
 from agent.ingestion.pipeline import IngestionPipeline
 from agent.ingestion.models import CanonicalLogEvent
@@ -33,16 +46,12 @@ class AnalysisService:
             self.cancellation_checker.raise_if_cancelled(job_id)
 
     def _persist_analysis(self, result: AnalysisResult, run_triage: bool):
-        from agent.persistence.mappers import DataMapper
-        from agent.persistence.lifecycle import IncidentLifecycle
-        from agent.persistence.orm_models import IngestionJob, TriageRun, EvidenceItem, Report
-        import uuid
-        
         with cast(UnitOfWork, self.uow) as uow:
             # 1. Ingestion Job
             # Check if job_id is already assigned (from idempotency flow)
             job_id = result.job_id
             
+            job: IngestionJob | None = None
             if result.ingestion_result and not job_id:
                 job_id = str(uuid.uuid4())
                 job = IngestionJob(
@@ -66,7 +75,7 @@ class AnalysisService:
                 uow.ingestion_jobs.add(job)
             elif job_id:
                 # Update existing job
-                job = uow.session.query(IngestionJob).get(job_id)
+                job = uow.session.get(IngestionJob, job_id)
                 if job and result.ingestion_result:
                     job.total_records = result.ingestion_result.metrics.total_records
                     job.parsed_records = result.ingestion_result.metrics.parsed_records
@@ -79,43 +88,62 @@ class AnalysisService:
                     job.parser_counts = result.ingestion_result.metrics.parser_counts
                     job.error_counts = result.ingestion_result.metrics.error_counts
             
+            if job is None:
+                raise RuntimeError("analysis_job_missing")
+
             # 2. Canonical Events
+            persisted_events: list[CanonicalEvent] = []
             for event in result.event_map.values():
                 orm_event = DataMapper.domain_event_to_orm(event)
-                existing_event = uow.canonical_events.get(orm_event.event_id)
+                existing_event = uow.canonical_events.get_for_update(orm_event.event_id)
                 if not existing_event:
                     uow.canonical_events.add(orm_event)
                     job.events.append(orm_event)
+                    persisted_events.append(orm_event)
                 else:
                     if existing_event not in job.events:
                         job.events.append(existing_event)
+                    persisted_events.append(existing_event)
                 
             # 3. Detection Signals
             assert result.detection_result is not None
+            persisted_signals: list[DetectionSignal] = []
             for signal in result.detection_result.signals:
                 orm_signal = DataMapper.domain_signal_to_orm(signal)
-                existing_signal = uow.detection_signals.get(orm_signal.signal_id)
+                existing_signal = uow.detection_signals.get_for_update(orm_signal.signal_id)
                 if not existing_signal:
                     uow.detection_signals.add(orm_signal)
                     job.signals.append(orm_signal)
+                    persisted_signals.append(orm_signal)
                 else:
                     if existing_signal not in job.signals:
                         job.signals.append(existing_signal)
+                    persisted_signals.append(existing_signal)
                 
             # 4. Incidents
             assert result.detection_result is not None
+            persisted_incidents: list[Incident] = []
             for inc in result.detection_result.incidents:
                 orm_inc = DataMapper.domain_incident_to_orm(inc)
                 
                 # Check idempotency/existing
-                existing = uow.incidents.get(orm_inc.incident_id)
+                existing = uow.incidents.get_for_update(orm_inc.incident_id)
                 if not existing:
                     uow.incidents.add(orm_inc)
                     job.incidents.append(orm_inc)
                     IncidentLifecycle.transition(orm_inc, "new", actor="detection_engine")
+                    persisted_incidents.append(orm_inc)
                 else:
                     if existing not in job.incidents:
                         job.incidents.append(existing)
+                        # job_ids is part of the incident projection, so the existing
+                        # optimistic version is also the projection version source.
+                        existing.version = max(1, int(existing.version or 1)) + 1
+                    persisted_incidents.append(existing)
+
+            persisted_incident_by_id = {
+                str(incident.incident_id): incident for incident in persisted_incidents
+            }
             
             uow.session.flush() # Flush to get incident IDs ready for triage references
             
@@ -127,12 +155,12 @@ class AnalysisService:
                     if not incident_id:
                         continue
                         
-                    orm_inc = uow.incidents.get(incident_id)
-                    if orm_inc:
+                    triage_incident = persisted_incident_by_id.get(str(incident_id))
+                    if triage_incident:
                         verdict = inc_state.get("triage_verdict")
                         new_status = "triaged" if verdict else "needs_review"
                         IncidentLifecycle.transition(
-                            orm_inc, 
+                            triage_incident,
                             new_status, 
                             actor_type="triage_agent", 
                             actor_id="system", 
@@ -199,72 +227,15 @@ class AnalysisService:
                             uow.reports.add(report)
                             
             # 7.5 OpenSearch Outbox Enqueue
-            from agent.config import get_settings
-            from agent.opensearch.documents import (
-                canonical_event_document,
-                detection_signal_document,
-                incident_document
+            SearchOutboxService(
+                uow.session,
+                uow.search_index_outbox,
+                uow.settings,
+            ).enqueue_analysis(
+                events=persisted_events,
+                signals=persisted_signals,
+                incidents=persisted_incidents,
             )
-            from datetime import datetime, timezone
-
-            settings = get_settings()
-            if settings.opensearch_enabled:
-                now_utc = datetime.now(timezone.utc)
-                schema_version = settings.opensearch_schema_version
-
-                event_incident_map: Dict[str, set[str]] = {}
-                signal_incident_map: Dict[str, set[str]] = {}
-
-                if result.detection_result:
-                    for domain_inc in result.detection_result.incidents:
-                        for eid in domain_inc.event_ids:
-                            event_incident_map.setdefault(eid, set()).add(domain_inc.incident_id)
-                        for sid in domain_inc.signal_ids:
-                            signal_incident_map.setdefault(sid, set()).add(domain_inc.incident_id)
-
-                for event in result.event_map.values():
-                    orm_event = uow.canonical_events.get(event.event_id)
-                    if orm_event:
-                        event_doc = canonical_event_document(
-                            orm_event,
-                            schema_version=schema_version,
-                            indexed_at=now_utc,
-                            job_ids=(str(job.id),) if job else (),
-                            incident_ids=tuple(event_incident_map.get(event.event_id, set())),
-                            context_incident_ids=(),
-                        )
-                        uow.search_index_outbox.enqueue_upsert(event_doc)
-
-                if result.detection_result:
-                    for signal in result.detection_result.signals:
-                        orm_signal = uow.detection_signals.get(signal.signal_id)
-                        if orm_signal:
-                            signal_doc = detection_signal_document(
-                                orm_signal,
-                                schema_version=schema_version,
-                                indexed_at=now_utc,
-                                job_ids=(str(job.id),) if job else (),
-                                incident_ids=tuple(signal_incident_map.get(signal.signal_id, set())),
-                            )
-                            uow.search_index_outbox.enqueue_upsert(signal_doc)
-
-                    for inc_state in result.incidents:
-                        incident_id = inc_state.get("incident_id")
-                        if not incident_id:
-                            continue
-                        orm_inc = uow.incidents.get(incident_id)
-                        if orm_inc:
-                            has_report = bool(inc_state.get("final_report"))
-                            has_val_ev = bool(inc_state.get("validated_evidence"))
-                            incident_doc = incident_document(
-                                orm_inc,
-                                schema_version=schema_version,
-                                indexed_at=now_utc,
-                                job_ids=(str(job.id),) if job else (),
-                                has_report=has_report,
-                                has_validated_evidence=has_val_ev
-                            )
-                            uow.search_index_outbox.enqueue_upsert(incident_doc)
                             
             # 8. Complete only if the database still grants this processing lease.
             # This conditional update is the final cancellation-vs-completion arbiter.

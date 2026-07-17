@@ -59,6 +59,7 @@ EXPECTED_PAYLOAD_FILES = (
 _SENSITIVE_TEXT = re.compile(
     r"(?i)(?:authorization\s*:|bearer\s+[a-z0-9._~+/=-]+|"
     r"api[_ -]?key\s*[:=]|password\s*[:=]|"
+    r"opensearch(?:[_ -]?url)?\s*[:=]|"
     r"soc_[a-z0-9_-]{20,}|(?:[a-z]:[\\/]|/(?:home|root|srv|tmp|var)/)|"
     r"(?:postgres(?:ql)?|mysql|mariadb|redis)://|sqlite:///|"
     r"eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+|"

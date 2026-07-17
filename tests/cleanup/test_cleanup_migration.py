@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 
 CLEANUP_REVISION = "5d2c9a7e4b10"
 ARCHIVE_REVISION = "5d2b8f6a1c42"
+OUTBOX_REVISION = "02a14b4d18bf"
 
 
 def _config(database: Path) -> Config:
@@ -22,6 +23,7 @@ def _config(database: Path) -> Config:
 
 def test_cleanup_revision_follows_archive() -> None:
     script = ScriptDirectory.from_config(Config("alembic.ini"))
+    assert script.get_heads() == [OUTBOX_REVISION]
     revision = script.get_revision(CLEANUP_REVISION)
     assert revision is not None
     assert revision.down_revision == ARCHIVE_REVISION

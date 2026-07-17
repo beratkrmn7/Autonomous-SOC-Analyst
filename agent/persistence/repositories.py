@@ -19,6 +19,10 @@ class GenericRepository:
     def get(self, id_val):
         # We assume standard primary key name or use session.get
         return self.session.get(self.model_cls, id_val)
+
+    def get_for_update(self, id_val):
+        """Load and lock an existing source row for projection-safe mutation."""
+        return self.session.get(self.model_cls, id_val, with_for_update=True)
         
     def get_or_404(self, id_val):
         entity = self.get(id_val)

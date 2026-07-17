@@ -3,6 +3,7 @@ from typing import List, Optional
 from pydantic import BaseModel
 from agent.api.deps import get_uow, require_permission
 from agent.application.authentication import AuthenticatedPrincipal
+from agent.application.search_outbox import SearchOutboxService
 from agent.persistence.unit_of_work import UnitOfWork
 from agent.persistence.lifecycle import IncidentLifecycle
 from agent.security.authorization import Permission
@@ -102,8 +103,6 @@ def update_status(
     ),
     uow: UnitOfWork = Depends(get_uow),
 ):
-    from agent.application.errors import InvalidTransitionError
-    
     with uow:
         incident = uow.incidents.get(incident_id)
         if not incident:
@@ -118,42 +117,22 @@ def update_status(
                 }
             )
             
-        try:
-            IncidentLifecycle.transition(
-                incident,
-                req.status,
-                actor=principal.subject_type,
-                actor_type=principal.subject_type,
-                actor_id=principal.subject_id,
-                request_id=request.state.request_id,
-                details={},
-            )
-            
-            from agent.config import get_settings
-            from agent.opensearch.documents import incident_document
-            from datetime import datetime, timezone
-            
-            settings = get_settings()
-            if settings.opensearch_enabled:
-                has_report = len(incident.reports) > 0 if hasattr(incident, 'reports') and incident.reports else False
-                has_val_ev = any(
-                    ev.validation_status == "validated"
-                    for run in getattr(incident, 'triage_runs', [])
-                    for ev in getattr(run, 'evidence_items', [])
-                )
-                doc = incident_document(
-                    incident,
-                    schema_version=settings.opensearch_schema_version,
-                    indexed_at=datetime.now(timezone.utc),
-                    job_ids=tuple([j.id for j in incident.jobs]) if hasattr(incident, 'jobs') else (),
-                    has_report=has_report,
-                    has_validated_evidence=has_val_ev
-                )
-                uow.search_index_outbox.enqueue_upsert(doc)
-                
-            uow.commit()
-        except InvalidTransitionError as e:
-            raise HTTPException(status_code=409, detail={"code": "invalid_incident_transition", "message": str(e)})
+        transition = IncidentLifecycle.transition(
+            incident,
+            req.status,
+            actor=principal.subject_type,
+            actor_type=principal.subject_type,
+            actor_id=principal.subject_id,
+            request_id=request.state.request_id,
+            details={},
+        )
+        if transition is not None:
+            assert uow.session is not None
+            SearchOutboxService(
+                uow.session,
+                uow.search_index_outbox,
+                uow.settings,
+            ).enqueue_incidents([incident])
             
         return {"status": "success", "new_status": incident.status, "version": incident.version}
 

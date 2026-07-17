@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime, timezone
+import hashlib
 from ipaddress import ip_address
 import json
 import math
 from typing import Any, cast, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
 from agent.archive.schemas import safe_string_list, safe_text
 from agent.persistence.orm_models import CanonicalEvent, DetectionSignal, Incident
@@ -39,6 +41,10 @@ def _normalized_ip(value: Any) -> str | None:
         return None
 
 
+def _safe_sorted_strings(value: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(safe_string_list(tuple(sorted(set(value)))))
+
+
 class SafeSearchDocument(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -51,10 +57,8 @@ class SafeSearchDocument(BaseModel):
 
     @field_validator("indexed_at", "source_updated_at", mode="before")
     @classmethod
-    def normalize_timestamps(cls, value: datetime) -> datetime:
-        if not isinstance(value, datetime):
-            raise ValueError("opensearch_document_timestamp_invalid")
-        return _utc(value)
+    def normalize_timestamps(cls, value: Any) -> Any:
+        return _utc(value) if isinstance(value, datetime) else value
 
 
 class CanonicalEventSearchDocument(SafeSearchDocument):
@@ -175,7 +179,8 @@ def canonical_event_document(
     row: CanonicalEvent,
     *,
     schema_version: str,
-    indexed_at: datetime,
+    indexed_at: datetime | None = None,
+    document_version: int = 1,
     job_ids: tuple[str, ...] = (),
     incident_ids: tuple[str, ...] = (),
     context_incident_ids: tuple[str, ...] = (),
@@ -183,12 +188,15 @@ def canonical_event_document(
     row_timestamp = cast(datetime | None, row.timestamp)
     observed_at = cast(datetime | None, row.observed_at)
     timestamp = row_timestamp or observed_at or indexed_at
+    if timestamp is None:
+        raise ValueError("opensearch_document_timestamp_missing")
+    snapshot_at = indexed_at or timestamp
     event_id = _required_text(row.event_id, max_length=256)
     return CanonicalEventSearchDocument(
         schema_version=schema_version,
         entity_id=event_id,
-        document_version=1,
-        indexed_at=indexed_at,
+        document_version=document_version,
+        indexed_at=snapshot_at,
         source_updated_at=timestamp,
         event_id=event_id,
         timestamp=timestamp,
@@ -204,9 +212,9 @@ def canonical_event_document(
         action=_text(row.action, max_length=64),
         user=_text(row.user, max_length=256),
         safe_message_excerpt=_text(row.safe_message_excerpt, max_length=1_024),
-        job_ids=tuple(safe_string_list(job_ids)),
-        incident_ids=tuple(safe_string_list(incident_ids)),
-        context_incident_ids=tuple(safe_string_list(context_incident_ids)),
+        job_ids=_safe_sorted_strings(job_ids),
+        incident_ids=_safe_sorted_strings(incident_ids),
+        context_incident_ids=_safe_sorted_strings(context_incident_ids),
     )
 
 
@@ -214,18 +222,27 @@ def detection_signal_document(
     row: DetectionSignal,
     *,
     schema_version: str,
-    indexed_at: datetime,
+    indexed_at: datetime | None = None,
+    document_version: int = 1,
     job_ids: tuple[str, ...] = (),
     incident_ids: tuple[str, ...] = (),
 ) -> DetectionSignalSearchDocument:
-    created_at = cast(datetime | None, row.created_at) or indexed_at
+    created_at = (
+        cast(datetime | None, row.created_at)
+        or cast(datetime | None, row.first_seen)
+        or cast(datetime | None, row.last_seen)
+        or indexed_at
+    )
+    if created_at is None:
+        raise ValueError("opensearch_document_timestamp_missing")
+    snapshot_at = indexed_at or created_at
     signal_id = _required_text(row.signal_id, max_length=256)
     confidence = float(row.confidence) if row.confidence is not None else None
     return DetectionSignalSearchDocument(
         schema_version=schema_version,
         entity_id=signal_id,
-        document_version=1,
-        indexed_at=indexed_at,
+        document_version=document_version,
+        indexed_at=snapshot_at,
         source_updated_at=created_at,
         signal_id=signal_id,
         rule_id=_text(row.rule_id, max_length=128),
@@ -240,10 +257,10 @@ def detection_signal_document(
         created_at=created_at,
         suppressed=bool(row.suppressed),
         suppression_reason=_text(row.suppression_reason, max_length=256),
-        mitre_techniques=tuple(safe_string_list(row.mitre_techniques)),
-        target_entities=tuple(safe_string_list(row.target_entities)),
-        job_ids=tuple(safe_string_list(job_ids)),
-        incident_ids=tuple(safe_string_list(incident_ids)),
+        mitre_techniques=_safe_sorted_strings(tuple(row.mitre_techniques or ())),
+        target_entities=_safe_sorted_strings(tuple(row.target_entities or ())),
+        job_ids=_safe_sorted_strings(job_ids),
+        incident_ids=_safe_sorted_strings(incident_ids),
     )
 
 
@@ -251,13 +268,16 @@ def incident_document(
     row: Incident,
     *,
     schema_version: str,
-    indexed_at: datetime,
+    indexed_at: datetime | None = None,
     job_ids: tuple[str, ...] = (),
     has_report: bool = False,
     has_validated_evidence: bool = False,
 ) -> IncidentSearchDocument:
     created_at = cast(datetime | None, row.created_at)
     updated_at = cast(datetime | None, row.updated_at) or created_at or indexed_at
+    if updated_at is None:
+        raise ValueError("opensearch_document_timestamp_missing")
+    snapshot_at = indexed_at or updated_at
     incident_id = _required_text(row.incident_id, max_length=256)
     confidence = float(row.confidence) if row.confidence is not None else None
     version = max(1, int(row.version or 1))
@@ -265,7 +285,7 @@ def incident_document(
         schema_version=schema_version,
         entity_id=incident_id,
         document_version=version,
-        indexed_at=indexed_at,
+        indexed_at=snapshot_at,
         source_updated_at=updated_at,
         incident_id=incident_id,
         title=_text(row.title, max_length=512),
@@ -280,19 +300,42 @@ def incident_document(
         created_at=created_at,
         updated_at=updated_at,
         primary_entity=_text(row.primary_entity, max_length=256),
-        target_entities=tuple(safe_string_list(row.target_entities)),
-        mitre_techniques=tuple(safe_string_list(row.mitre_techniques)),
-        job_ids=tuple(safe_string_list(job_ids)),
+        target_entities=_safe_sorted_strings(tuple(row.target_entities or ())),
+        mitre_techniques=_safe_sorted_strings(tuple(row.mitre_techniques or ())),
+        job_ids=_safe_sorted_strings(job_ids),
         has_report=has_report,
         has_validated_evidence=has_validated_evidence,
     )
 
 
-def deterministic_document_json(document: SearchDocument) -> str:
+_SEARCH_DOCUMENT_ADAPTER: TypeAdapter[SearchDocument] = TypeAdapter(SearchDocument)
+
+
+def search_document_payload(document: SearchDocument) -> dict[str, object]:
+    """Return the JSON-compatible object stored in the outbox JSON column."""
+    return document.model_dump(mode="json")
+
+
+def canonical_payload_bytes(payload: Mapping[str, object]) -> bytes:
+    """Serialize an outbox payload once using the canonical checksum contract."""
     return json.dumps(
-        document.model_dump(mode="json"),
+        dict(payload),
         ensure_ascii=False,
         allow_nan=False,
         separators=(",", ":"),
         sort_keys=True,
-    )
+    ).encode("utf-8")
+
+
+def calculate_payload_sha256(payload: Mapping[str, object]) -> str:
+    return hashlib.sha256(canonical_payload_bytes(payload)).hexdigest()
+
+
+def validate_search_document(payload: Mapping[str, object]) -> SearchDocument:
+    """Validate a database JSON payload as one of the safe search documents."""
+    return _SEARCH_DOCUMENT_ADAPTER.validate_python(dict(payload))
+
+
+def deterministic_document_json(document: SearchDocument) -> str:
+    """Keep the Phase 5D.3A deterministic serializer as a compatibility helper."""
+    return canonical_payload_bytes(search_document_payload(document)).decode("utf-8")
