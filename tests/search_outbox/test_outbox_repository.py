@@ -177,6 +177,7 @@ def test_claim_is_bounded_skips_active_lease_and_reclaims_expired(
     session: Session,
 ) -> None:
     repository = _repo(session)
+    reference_now = datetime.now(timezone.utc)
     pending = repository.enqueue_upsert(_document("event-pending"))
     active = repository.enqueue_upsert(_document("event-active"))
     expired = repository.enqueue_upsert(_document("event-expired"))
@@ -185,14 +186,14 @@ def test_claim_is_bounded_skips_active_lease_and_reclaims_expired(
 
     active.status = "processing"
     active.lease_owner = "active-worker"
-    active.lease_expires_at = NOW + timedelta(days=1)
+    active.lease_expires_at = reference_now + timedelta(days=1)
     expired.status = "processing"
     expired.lease_owner = "dead-worker"
-    expired.lease_expires_at = NOW - timedelta(seconds=1)
+    expired.lease_expires_at = reference_now - timedelta(seconds=1)
     retry.status = "retry"
-    retry.available_at = NOW - timedelta(seconds=1)
+    retry.available_at = reference_now - timedelta(seconds=1)
     future.status = "retry"
-    future.available_at = NOW + timedelta(days=1)
+    future.available_at = reference_now + timedelta(days=1)
     session.commit()
 
     first_batch = repository.claim_batch("worker-1", limit=2, lease_seconds=60)

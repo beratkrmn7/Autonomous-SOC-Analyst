@@ -195,7 +195,6 @@ def test_true_interrupting_provider_timeout():
         provider._custom_llm_injected = False
         
         runner = TriageRunner(provider=provider, cache=InMemoryTriageCache())
-        runner.settings.triage_timeout_seconds = 0.5
         
         context = TriageIncidentContext(
             incident=DetectionIncidentBundle(
@@ -207,9 +206,10 @@ def test_true_interrupting_provider_timeout():
             events=[], context_events=[]
         )
         
-        start = time.monotonic()
-        result = runner.run({}, context)
-        elapsed = time.monotonic() - start
+        with patch.object(runner.settings, "triage_timeout_seconds", 0.5):
+            start = time.monotonic()
+            result = runner.run({}, context)
+            elapsed = time.monotonic() - start
         
         assert timeout_passed[0] is not None
         assert 0.4 < timeout_passed[0] < 0.6
@@ -423,17 +423,13 @@ def test_prompt_budget_exceeded():
     )
     context = TriageIncidentContext(incident=bundle, events=[_make_dummy_event("E01")])
     settings = get_settings()
-    settings.max_prompt_tokens = -1 # force fail
     runner = TriageRunner(provider=MagicMock(), cache=InMemoryTriageCache())
     state = {}
-    res = runner.run(state, context)
+    with patch.object(settings, "max_prompt_tokens", -1):
+        res = runner.run(state, context)
     assert res.review_reason == ReviewReason.PROMPT_BUDGET_EXCEEDED
-    settings.max_prompt_tokens = 30000
 
 def test_metrics_counters():
-    settings = get_settings()
-    settings.max_prompt_tokens = 30000 # ensure it's reset
-    
     provider_mock = MagicMock()
     from agent.triage.provider import TriageProviderResponse
     provider_mock.invoke.return_value = TriageProviderResponse(

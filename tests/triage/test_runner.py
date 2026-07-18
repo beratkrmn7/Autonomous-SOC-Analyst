@@ -8,6 +8,7 @@ from agent.detection.models import IncidentBundle as DetectionIncidentBundle
 from agent.triage.models import TriageIncidentContext
 import datetime
 import time
+from unittest.mock import patch
 
 class SlowFakeProvider(TriageProvider):
     def invoke(self, request: TriageProviderRequest) -> TriageProviderResponse:
@@ -54,7 +55,6 @@ class InvalidThenValidProvider(TriageProvider):
 def test_triage_runner_global_timeout():
     provider = SlowFakeProvider()
     runner = TriageRunner(provider=provider)
-    runner.settings.triage_timeout_seconds = 0.1 # Very short timeout
     
     bundle = DetectionIncidentBundle(
         incident_id="INC-1",
@@ -79,7 +79,8 @@ def test_triage_runner_global_timeout():
     
     state = {"incident_id": "INC-1", "detected_signals": [], "candidate_evidence": []}
     
-    result = runner.run(state, context)
+    with patch.object(runner.settings, "triage_timeout_seconds", 0.1):
+        result = runner.run(state, context)
     assert result.submission is not None
     assert result.submission.triage_verdict == TriageVerdict.NEEDS_REVIEW
     assert result.review_reason == ReviewReason.PROVIDER_TIMEOUT
@@ -122,7 +123,6 @@ def test_triage_runner_provider_timeout_exception():
 def test_triage_runner_retries_invalid_structured_output_once():
     provider = InvalidThenValidProvider()
     runner = TriageRunner(provider=provider)
-    runner.settings.llm_invalid_response_retries = 1
 
     timestamp = datetime.datetime(2026, 7, 10, tzinfo=datetime.timezone.utc)
     bundle = DetectionIncidentBundle(
@@ -145,10 +145,11 @@ def test_triage_runner_retries_invalid_structured_output_once():
         last_seen=timestamp,
     )
 
-    result = runner.run(
-        {"incident_id": "INC-RETRY", "detected_signals": [], "candidate_evidence": []},
-        TriageIncidentContext(incident=bundle, events=[]),
-    )
+    with patch.object(runner.settings, "llm_invalid_response_retries", 1):
+        result = runner.run(
+            {"incident_id": "INC-RETRY", "detected_signals": [], "candidate_evidence": []},
+            TriageIncidentContext(incident=bundle, events=[]),
+        )
 
     assert provider.calls == 2
     assert "CORRECTIVE RETRY" in provider.prompts[1]
