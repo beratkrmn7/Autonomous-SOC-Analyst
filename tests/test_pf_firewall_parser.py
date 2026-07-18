@@ -35,3 +35,15 @@ def test_pf_firewall_fqdn_parsing_list():
     evt = p.parse(raw, ctx, "E1")
     assert evt.source_fqdns == ["s1.example.test", "s2.example.test"]
     assert evt.destination_fqdns == ["d1.example.test", "d2.example.test"]
+
+
+def test_pf_firewall_normalizes_initial_syn_without_changing_composite_flags():
+    p = PfFirewallParser()
+    ctx = ParseContext(source_name="t", observed_at="2026-07-10T00:00:00Z")
+
+    syn = p.parse({"tcpFlags": "S"}, ctx, "E-SYN")
+    syn_ack = p.parse({"tcpFlags": "SA"}, ctx, "E-SYN-ACK")
+
+    assert syn.tcp_flags == "SYN"
+    assert "flags=S" in syn.safe_message_excerpt
+    assert syn_ack.tcp_flags == "SA"

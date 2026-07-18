@@ -2,7 +2,7 @@
 import pytest
 from langchain_core.messages import AIMessage
 from agent.triage.groq_provider import GroqTriageProvider
-from agent.triage.models import TriageInput, SafeEventView
+from agent.triage.models import SafeEventView, TriageInput, TriageSubmission
 from agent.triage.provider import TriageProviderRequest
 from agent.triage.exceptions import (
     ProviderInvalidResponseError,
@@ -67,6 +67,9 @@ def test_groq_provider_valid_submission(fake_llm, triage_test_settings):
     assert response.submission is not None
     assert response.submission.severity.value == "high"
     assert response.prompt_tokens == 10
+    assert request.triage_input.model_dump_json(indent=2) not in llm.runnable.last_messages[1].content
+    submit_tool = next(tool for tool in llm.last_tools if tool.name == "submit_triage_result")
+    assert submit_tool.args_schema is TriageSubmission
 
 def test_groq_provider_search_then_submit(fake_llm, triage_test_settings):
     actions = [

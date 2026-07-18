@@ -1,4 +1,4 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from agent.triage.models import TriageSubmission, EvidenceValidationResult, TriageClaim
 from agent.triage.enums import TriageVerdict
 
@@ -7,7 +7,9 @@ def generate_report(
     validated_evidence: List[EvidenceValidationResult],
     accepted_claims: List[TriageClaim],
     incident_metadata: Dict[str, Any],
-    review_reason: str
+    review_reason: str,
+    recommended_actions: Optional[List[str]] = None,
+    deterministic_facts: Optional[Dict[str, Any]] = None,
 ) -> str:
     
     valid_ev_ids = [e.evidence_id for e in validated_evidence if e.status == "validated"]
@@ -24,6 +26,28 @@ def generate_report(
         
     report.append("\n## Triage Summary")
     report.append(submission.summary)
+
+    if deterministic_facts:
+        ports = ", ".join(
+            str(port) for port in deterministic_facts["destination_ports"]
+        ) or "unknown"
+        protocols = ", ".join(deterministic_facts["protocols"]) or "unknown"
+        report.append("\n## Deterministic Incident Facts")
+        report.append(f"- Source: {deterministic_facts['primary_entity']}")
+        report.append(f"- Event count: {deterministic_facts['event_count']}")
+        report.append(
+            "- Distinct target count: "
+            f"{deterministic_facts['distinct_target_count']}"
+        )
+        report.append(f"- Protocols: {protocols}")
+        report.append(f"- Destination ports: {ports}")
+        report.append(
+            "- All attempts blocked: "
+            f"{'yes' if deterministic_facts['all_attempts_blocked'] else 'no'}"
+        )
+        report.append(
+            f"- SYN-only TCP traffic: {'yes' if deterministic_facts['syn_only'] else 'no'}"
+        )
     
     report.append("\n## Validated Evidence")
     if valid_ev_ids:
@@ -45,8 +69,10 @@ def generate_report(
         report.append("No high-impact claims accepted.")
         
     report.append("\n## Recommended Analyst Actions")
-    # For now, deterministic actions based on verdict
-    if submission.triage_verdict == TriageVerdict.FALSE_POSITIVE:
+    if recommended_actions:
+        for action in recommended_actions:
+            report.append(f"- {action}")
+    elif submission.triage_verdict == TriageVerdict.FALSE_POSITIVE:
         report.append("- No immediate action required. Verify benign nature.")
     elif submission.triage_verdict == TriageVerdict.CONFIRMED_INCIDENT:
         report.append("- Isolate affected hosts if applicable.")

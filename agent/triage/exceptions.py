@@ -18,8 +18,14 @@ class ProviderTimeoutError(TriageProviderError):
         super().__init__(message, ReviewReason.PROVIDER_TIMEOUT)
 
 class ProviderRateLimitError(TriageProviderError):
-    def __init__(self, message="Provider rate limit exceeded"):
+    def __init__(
+        self,
+        message="Provider rate limit exceeded",
+        *,
+        retry_after_seconds: float | None = None,
+    ):
         super().__init__(message, ReviewReason.PROVIDER_RATE_LIMITED)
+        self.retry_after_seconds = retry_after_seconds
 
 class ProviderAuthenticationError(TriageProviderError):
     def __init__(self, message="Provider authentication failed"):

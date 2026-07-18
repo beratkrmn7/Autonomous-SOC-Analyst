@@ -10,6 +10,8 @@ from agent.errors import ConfigurationError
 from agent.application.cancellation import JobCancellationRequested
 from agent.triage.runner import TriageRunner
 from agent.triage.groq_provider import GroqTriageProvider
+from agent.triage.ollama_provider import OllamaTriageProvider
+from agent.triage.provider import TriageProvider
 from agent.triage.cache import InMemoryTriageCache
 from agent.triage.validation import validate_evidence
 from agent.triage.claims import validate_claims
@@ -47,7 +49,11 @@ def get_triage_runner() -> TriageRunner:
     if not _circuit_breaker:
         _circuit_breaker = CircuitBreaker()
         
-    provider = GroqTriageProvider(circuit_breaker=_circuit_breaker)
+    provider: TriageProvider
+    if settings.llm_provider == "ollama":
+        provider = OllamaTriageProvider(circuit_breaker=_circuit_breaker)
+    else:
+        provider = GroqTriageProvider(circuit_breaker=_circuit_breaker)
     return TriageRunner(provider=provider, cache=_triage_cache)
 
 def automated_detection_node(state: IncidentState) -> dict:
@@ -263,7 +269,13 @@ def triage_node(state: IncidentState) -> dict:
             "tool_call_count": result.metrics.tool_call_count,
             "triage_metrics": result.metrics.model_dump(),
             "review_reason": result.review_reason.value,
+            # LangGraph persists returned state updates, not mutations made to
+            # the node's input mapping. Evidence validation needs this exact
+            # bounded input to validate model-selected evidence IDs.
+            "safe_triage_input": state.get("safe_triage_input", {}),
         }
+        if state.get("cache_key"):
+            triage_dict["cache_key"] = state["cache_key"]
         
         if result.submission:
             triage_dict.update({
@@ -363,6 +375,28 @@ def evidence_validation_node(state: IncidentState) -> dict:
             "confidence_score": 0.0,
             "review_reason": ReviewReason.NO_VALIDATED_EVIDENCE.value
         })
+    else:
+        from agent.triage.guardrails import derive_network_incident_facts
+        from agent.triage.enums import TriageVerdict
+
+        network_facts = derive_network_incident_facts(context)
+        if network_facts:
+            # Network incident identity and quantitative facts are owned by the
+            # deterministic detector, never by the model.
+            submission.incident_type = context.incident.incident_type
+            ret["incident_type"] = context.incident.incident_type
+
+            if (
+                submission.triage_verdict == TriageVerdict.CONFIRMED_INCIDENT
+                and network_facts["all_attempts_blocked"]
+            ):
+                submission.triage_verdict = TriageVerdict.SUSPICIOUS_ACTIVITY
+                ret["triage_verdict"] = TriageVerdict.SUSPICIOUS_ACTIVITY.value
+                ret["policy_adjustments"] = [
+                    "all_blocked_network_verdict_capped"
+                ]
+
+            ret["triage_submission"] = submission.model_dump()
         
     return ret
 
@@ -376,6 +410,21 @@ def action_recommendation_node(state: IncidentState) -> dict:
     incident_type = state.get("incident_type")
     actions = []
     mitre_techniques = []
+
+    network_facts = None
+    incident_dict = state.get("incident")
+    if incident_dict:
+        try:
+            from agent.triage.guardrails import derive_network_incident_facts
+            from agent.triage.models import TriageIncidentContext
+
+            network_facts = derive_network_incident_facts(
+                TriageIncidentContext(**incident_dict)
+            )
+        except Exception:
+            logger.warning("Unable to derive deterministic network facts")
+    if network_facts:
+        incident_type = network_facts["incident_type"]
     
     MITRE_MAP = {
         "bruteforce_failed": ["T1110 - Brute Force"],
@@ -386,10 +435,14 @@ def action_recommendation_node(state: IncidentState) -> dict:
         "sql_injection": ["T1190 - Exploit Public-Facing Application"],
         "malware_hash": ["T1204 - User Execution", "T1059 - Command and Scripting Interpreter"],
         "port_scan": ["T1046 - Network Service Discovery"],
+        "horizontal_scan": ["T1046 - Network Service Discovery"],
+        "vertical_scan": ["T1046 - Network Service Discovery"],
+        "rdp_probe": ["T1046 - Network Service Discovery"],
+        "ssh_probe": ["T1046 - Network Service Discovery"],
         "xss": ["T1190 - Exploit Public-Facing Application"]
     }
     
-    if incident_type in MITRE_MAP and verdict in ["suspicious", "confirmed_incident"]:
+    if incident_type in MITRE_MAP and verdict in ["suspicious_activity", "confirmed_incident"]:
         mitre_techniques.extend(MITRE_MAP[incident_type])
     
     if verdict == "needs_review":
@@ -404,8 +457,14 @@ def action_recommendation_node(state: IncidentState) -> dict:
         else:
             actions.append("No immediate action required.")
             actions.append("Consider tuning alert rules if this alert triggers frequently for normal traffic.")
-    elif verdict in ["suspicious", "confirmed_incident"]:
-        if incident_type == "sql_injection":
+    elif verdict in ["suspicious_activity", "confirmed_incident"]:
+        if network_facts and network_facts["all_attempts_blocked"]:
+            actions.extend([
+                "Review firewall and network telemetry for continued probing from the source IP.",
+                "Review relevant authentication logs for any separate successful activity.",
+                "Consider temporarily blocking or rate-limiting the source IP at the network edge.",
+            ])
+        elif incident_type == "sql_injection":
             actions.extend(["SOC Analyst should evaluate updating WAF rules to block signature.", "SOC Analyst should verify database integrity.", "SOC Analyst should perform endpoint validation."])
         elif incident_type == "bruteforce_success":
             actions.extend(["SOC Analyst should evaluate locking the compromised account.", "SOC Analyst should review session logs.", "SOC Analyst should evaluate forcing a password reset."])
@@ -493,12 +552,40 @@ def reporter_node(state: IncidentState) -> dict:
     else:
         submission = TriageSubmission(**submission_dict)
         
-    # Override verdict if state changed it (e.g. forced to needs_review by validation)
-    if state.get("triage_verdict") == "needs_review":
-        from agent.triage.enums import TriageVerdict, TriageSeverity
-        submission.triage_verdict = TriageVerdict.NEEDS_REVIEW
+    # The validated graph state is authoritative over the original model
+    # submission (for example, a blocked-network verdict cap).
+    from agent.triage.enums import TriageVerdict, TriageSeverity
+
+    state_verdict = state.get("triage_verdict")
+    if state_verdict:
+        submission.triage_verdict = TriageVerdict(state_verdict)
+    if state.get("severity"):
+        submission.severity = TriageSeverity(state["severity"])
+    if state.get("confidence_score") is not None:
+        submission.confidence_score = float(state["confidence_score"])
+    if submission.triage_verdict == TriageVerdict.NEEDS_REVIEW:
         submission.severity = TriageSeverity.NONE
         submission.confidence_score = 0.0
+
+    deterministic_facts = None
+    incident_dict = state.get("incident")
+    if incident_dict:
+        try:
+            from agent.triage.guardrails import (
+                build_deterministic_network_summary,
+                derive_network_incident_facts,
+            )
+            from agent.triage.models import TriageIncidentContext
+
+            context = TriageIncidentContext(**incident_dict)
+            deterministic_facts = derive_network_incident_facts(context)
+            if deterministic_facts:
+                submission.incident_type = deterministic_facts["incident_type"]
+                submission.summary = build_deterministic_network_summary(
+                    deterministic_facts
+                )
+        except Exception:
+            logger.warning("Unable to render deterministic network facts")
 
     valid_ev = [EvidenceValidationResult(**e) for e in state.get("validated_evidence", [])]
     rej_ev = [EvidenceValidationResult(**e) for e in state.get("rejected_evidence", [])]
@@ -513,7 +600,9 @@ def reporter_node(state: IncidentState) -> dict:
         validated_evidence=valid_ev + rej_ev,
         accepted_claims=claims,
         incident_metadata=metadata,
-        review_reason=state.get("review_reason", "none")
+        review_reason=state.get("review_reason", "none"),
+        recommended_actions=state.get("recommended_actions", []),
+        deterministic_facts=deterministic_facts,
     )
     
     return {"final_report": report}

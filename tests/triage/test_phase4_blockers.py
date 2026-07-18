@@ -9,6 +9,7 @@ from agent.detection.models import IncidentBundle as DetectionIncidentBundle
 from agent.triage.models import TriageIncidentContext
 from agent.schema import CanonicalLogEvent
 from agent.triage.models import TriageSubmission, TriageClaim, EvidenceValidationResult, TriageInput, EvidenceCandidate
+from agent.triage.models import TriageMetrics, TriageRunResult
 from agent.triage.enums import ClaimType, RejectionReason, TriageVerdict, TriageSeverity, ReviewReason
 from agent.triage.validation import validate_evidence
 from agent.triage.claims import validate_claims
@@ -98,6 +99,68 @@ def test_actual_incidentbundle_round_trip():
     # Verify the actual node run does not fail with validation errors
     res = triage_node(state)
     assert res.get("review_reason") != ReviewReason.INVALID_LLM_OUTPUT.value
+
+
+@patch("agent.nodes.get_triage_runner")
+def test_triage_node_returns_safe_input_for_graph_validation(mock_get_triage_runner):
+    state = IncidentState(
+        incident_id="INC-001",
+        incident=TriageIncidentContext(
+            incident=DetectionIncidentBundle(
+                incident_id="INC-001",
+                incident_type="test",
+                incident_family="test",
+                title="test",
+                severity="low",
+                confidence=1.0,
+                primary_entity="unknown",
+                target_entities=[],
+                signal_ids=[],
+                evidence=[],
+                metrics={},
+                mitre_techniques=[],
+                merge_key="mock",
+                event_ids=["E01"],
+                context_event_ids=[],
+                first_seen=datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc),
+                last_seen=datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc),
+            ),
+            events=[_make_dummy_event("E01")],
+        ).model_dump(mode="json"),
+        candidate_evidence=[],
+        detected_signals=[],
+    )
+    safe_input = TriageInput(
+        incident_id="INC-001",
+        incident_type="test",
+        incident_family="test",
+        title="test",
+        deterministic_severity="low",
+        deterministic_confidence=1.0,
+        first_seen="2024",
+        last_seen="2024",
+        primary_entity="unknown",
+    ).model_dump(mode="json")
+
+    def run(node_state, _context):
+        node_state["safe_triage_input"] = safe_input
+        return TriageRunResult(
+            metrics=TriageMetrics(
+                incident_id="INC-001",
+                provider="groq",
+                model="test",
+                prompt_version="test",
+                schema_version="1",
+                started_at="0",
+                completed_at="1",
+            )
+        )
+
+    mock_get_triage_runner.return_value.run.side_effect = run
+
+    result = triage_node(state)
+
+    assert result["safe_triage_input"] == safe_input
 
 def test_true_interrupting_provider_timeout():
     timeout_passed = [None]

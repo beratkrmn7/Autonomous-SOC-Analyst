@@ -48,6 +48,7 @@ class TriageInput(BaseModel):
     last_seen: str
     primary_entity: str
     target_entities: List[str] = Field(default_factory=list)
+    deterministic_metrics: dict[str, Any] = Field(default_factory=dict)
     signal_summaries: List[str] = Field(default_factory=list)
     candidate_evidence: List[EvidenceCandidate] = Field(default_factory=list)
     limited_context_events: List[SafeEventView] = Field(default_factory=list)

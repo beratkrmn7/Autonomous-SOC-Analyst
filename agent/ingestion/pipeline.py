@@ -50,8 +50,11 @@ class IngestionPipeline:
         if file_size > self.limits.MAX_UPLOAD_BYTES:
             raise ValueError(f"File {path_obj.name} exceeds MAX_UPLOAD_BYTES")
             
+        # Read through the largest accepted record so content sniffing can see
+        # the first JSONL record boundary. A fixed 1 KiB sample misclassifies a
+        # .json-named JSONL file whenever its first record is longer than 1 KiB.
         with open(path_obj, "rb") as f:
-            first_bytes = f.read(1024)
+            first_bytes = f.read(self.limits.MAX_RECORD_BYTES + 1)
             
         input_format = detect_input_format(path_obj, first_bytes)
         

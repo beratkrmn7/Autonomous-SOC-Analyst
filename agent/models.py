@@ -119,6 +119,7 @@ class IncidentState(TypedDict, total=False):
     claims: NotRequired[List[dict]]
     validated_claims: NotRequired[List[dict]]
     rejected_claims: NotRequired[List[dict]]
+    policy_adjustments: NotRequired[List[str]]
     
     # Triage Metrics & Cache
     provider_metrics: NotRequired[dict]

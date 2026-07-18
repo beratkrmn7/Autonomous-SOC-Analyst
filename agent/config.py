@@ -238,9 +238,12 @@ class Settings(BaseSettings):
     opensearch_outbox_max_claim_batch_size: int = Field(default=1_000, ge=1, le=5_000)
 
     llm_enabled: bool = True
-    llm_provider: Literal["groq"] = "groq"
-    llm_model: str = "llama-3.3-70b-versatile"
+    llm_provider: Literal["groq", "ollama"] = "groq"
+    llm_model: str = "openai/gpt-oss-120b"
     groq_api_key: Optional[SecretStr] = None
+    ollama_base_url: str = "http://127.0.0.1:11434"
+    ollama_keep_alive: str = Field(default="5m", min_length=1, max_length=32)
+    ollama_triage_timeout_seconds: int = Field(default=300, gt=0)
     
     pipeline_version: str = "1.0.0"
 
@@ -260,13 +263,14 @@ class Settings(BaseSettings):
     max_event_preview_chars: int = Field(default=1000, ge=100, le=5000)
     triage_timeout_seconds: int = Field(default=120, gt=0)
     llm_max_retries: int = Field(default=3, ge=0, le=10)
+    llm_invalid_response_retries: int = Field(default=1, ge=0, le=3)
     llm_retry_base_seconds: float = Field(default=1.0, gt=0)
     llm_retry_max_seconds: float = Field(default=10.0, gt=0)
     circuit_breaker_failure_threshold: int = Field(default=5, ge=1)
     circuit_breaker_reset_seconds: int = Field(default=60, ge=1)
     triage_cache_enabled: bool = True
     triage_cache_ttl_seconds: int = Field(default=3600, ge=0)
-    triage_prompt_version: str = "1.0.0"
+    triage_prompt_version: str = "phase4-v2"
     triage_schema_version: str = "1.0.0"
 
     # Phase 5A: Persistence Settings

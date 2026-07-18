@@ -19,4 +19,8 @@ def with_retry(
                 raise e
             
             delay = min(base_delay * (2 ** (attempt - 1)), max_delay)
+            if isinstance(e, ProviderRateLimitError) and e.retry_after_seconds is not None:
+                # Provider guidance is the earliest safe retry time. Bound it so
+                # a malformed response cannot block a worker indefinitely.
+                delay = max(delay, min(max(e.retry_after_seconds, 0.0), 60.0))
             sleeper(delay)

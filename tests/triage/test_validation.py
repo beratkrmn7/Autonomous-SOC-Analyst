@@ -1,9 +1,12 @@
+from datetime import datetime, timezone
+
 from agent.triage.validation import validate_evidence
 from agent.triage.claims import validate_claims
 from agent.triage.models import TriageSubmission, TriageInput, SafeEventView, EvidenceCandidate, TriageClaim
 from agent.triage.enums import TriageVerdict, TriageSeverity, RejectionReason, ClaimType
 
 def test_validate_evidence_success():
+    event_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
     submission = TriageSubmission(
         triage_verdict=TriageVerdict.CONFIRMED_INCIDENT,
         incident_type="test",
@@ -31,7 +34,7 @@ def test_validate_evidence_success():
                 quote="error occurred",
                 reason="test",
                 source="test_parser",
-                canonical_fields={},
+                canonical_fields={"timestamp": event_time.isoformat()},
                 vendor_original_fields={"src_ip": "1.2.3.4"}
             )
         ],
@@ -50,8 +53,7 @@ def test_validate_evidence_success():
     from agent.schema import CanonicalLogEvent
     from agent.detection.models import IncidentBundle
     from agent.triage.models import TriageIncidentContext
-    from datetime import datetime, timezone
-    trusted_events = [CanonicalLogEvent(event_id="EVT-1", timestamp=None, observed_at=datetime.now(timezone.utc), parse_status="success", parser_name="test_parser", source_name="test_source", safe_message_excerpt="An error occurred here", parser_metadata={"src_ip": "1.2.3.4"})]
+    trusted_events = [CanonicalLogEvent(event_id="EVT-1", timestamp=event_time, observed_at=datetime.now(timezone.utc), parse_status="success", parser_name="test_parser", source_name="test_source", safe_message_excerpt="An error occurred here", parser_metadata={"src_ip": "1.2.3.4"})]
     bundle = IncidentBundle(incident_id="INC-1", incident_type="test", incident_family="test", title="test", severity="low", confidence=1.0, primary_entity="ip", target_entities=[], signal_ids=[], evidence=[], metrics={}, mitre_techniques=[], merge_key="mock", event_ids=[], context_event_ids=[], first_seen=datetime.now(timezone.utc), last_seen=datetime.now(timezone.utc))
     context = TriageIncidentContext(incident=bundle, events=trusted_events)
     results = validate_evidence(submission, triage_input, context)

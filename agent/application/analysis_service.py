@@ -22,6 +22,7 @@ from agent.filtering import EventFilter
 from agent.detection.engine import DetectionEngine
 from agent.models import IncidentState
 from agent.graph import app
+from agent.triage.models import TriageIncidentContext
 from agent.application.cancellation import (
     JobCancellationChecker,
     JobCancellationRequested,
@@ -522,27 +523,44 @@ class AnalysisService:
         if isinstance(incident, dict):
             incident_id = incident.get("incident_id")
             event_ids = incident.get("event_ids", [])
+            context_event_ids = incident.get("context_event_ids", [])
             signal_ids = incident.get("signal_ids", [])
             evidence_list = incident.get("evidence", [])
+            incident_bundle = incident
         else:
             incident_id = getattr(incident, 'incident_id', None)
             event_ids = getattr(incident, 'event_ids', [])
+            context_event_ids = getattr(incident, 'context_event_ids', [])
             signal_ids = getattr(incident, 'signal_ids', [])
             evidence_list = getattr(incident, 'evidence', [])
+            if not hasattr(incident, 'model_dump'):
+                raise TypeError("incident must be a mapping or Pydantic model")
+            incident_bundle = incident.model_dump(mode="json")
         
-        canonical_events = []
-        for eid in event_ids:
-            if eid in event_map:
-                canonical_events.append(event_map[eid].model_dump(mode="json"))
+        incident_events = [event_map[eid] for eid in event_ids if eid in event_map]
+        context_events = [
+            event_map[eid] for eid in context_event_ids if eid in event_map
+        ]
+        canonical_events = [
+            event.model_dump(mode="json") for event in incident_events
+        ]
                 
         detected_signals = []
         for sid in signal_ids:
             if sid in signal_map:
                 sig = signal_map[sid]
+                rule_name = getattr(sig, 'rule_name', 'Unknown')
+                severity = getattr(sig, 'severity', 'low')
+                confidence = getattr(sig, 'confidence', 0.0)
                 detected_signals.append({
-                    "detector_name": getattr(sig, 'rule_name', 'Unknown'),
+                    "detector_name": rule_name,
+                    "rule_name": rule_name,
                     "status": "alert",
-                    "message": f"{getattr(sig, 'rule_name', 'Unknown')} detected. Severity: {getattr(sig, 'severity', 'low')}",
+                    "message": f"{rule_name} detected. Severity: {severity}",
+                    "description": f"{rule_name} detected",
+                    "severity": severity,
+                    "confidence_score": confidence,
+                    "mitre_techniques": getattr(sig, 'mitre_techniques', []),
                     "matched_event_ids": getattr(sig, 'event_ids', [])
                 })
                 
@@ -557,13 +575,14 @@ class AnalysisService:
                 "correlation_context": getattr(ev, 'correlation_context', ev.get('correlation_context') if isinstance(ev, dict) else {})
             })
             
-        # Extract Phase 3 IncidentBundle fields to ensure lossless transport
-        incident_bundle = None
-        if hasattr(incident, 'model_dump'):
-            incident_bundle = incident.model_dump(mode="json")
+        triage_context = TriageIncidentContext.model_validate({
+            "incident": incident_bundle,
+            "events": incident_events,
+            "context_events": context_events,
+        })
             
         return {
-            "incident": cast(dict, incident_bundle), # Pass true incident bundle!
+            "incident": triage_context.model_dump(mode="json"),
             "incident_id": str(incident_id),
             "canonical_events": canonical_events,
             "messages": [],

@@ -1,4 +1,5 @@
-from typing import List
+from datetime import datetime
+from typing import Any, List
 from agent.triage.models import TriageInput, TriageSubmission, EvidenceValidationResult, TriageIncidentContext
 from agent.triage.enums import RejectionReason
 
@@ -8,6 +9,12 @@ def normalize_text(text: str) -> str:
         return ""
     import re
     return re.sub(r'\s+', ' ', text.strip().lower())
+
+
+def normalize_field_value(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
 
 def validate_evidence(
     submission: TriageSubmission, 
@@ -84,7 +91,7 @@ def validate_evidence(
             for k, v in candidate.canonical_fields.items():
                 if hasattr(trusted_event, k):
                     val = getattr(trusted_event, k)
-                    if str(val) != str(v):
+                    if normalize_field_value(val) != normalize_field_value(v):
                         mismatch = True
                         break
                 else:

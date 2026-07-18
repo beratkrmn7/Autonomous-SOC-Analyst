@@ -2,6 +2,7 @@ from typing import List, Dict, Any
 from agent.triage.models import TriageInput, SafeEventView, EvidenceCandidate, TriageIncidentContext
 from agent.config import get_settings
 from agent.schema import CanonicalLogEvent
+from agent.triage.guardrails import derive_network_incident_facts
 import hashlib
 
 def generate_evidence_id(incident_id: str, event_id: str, source: str, quote: str, reason: str) -> str:
@@ -96,6 +97,11 @@ def build_triage_input(
         for w in getattr(e, 'data_quality_warnings', []):
             dq_warns.add(w)
             
+    deterministic_metrics = dict(context.incident.metrics)
+    network_facts = derive_network_incident_facts(context)
+    if network_facts:
+        deterministic_metrics.update(network_facts)
+
     return TriageInput(
         incident_id=context.incident.incident_id,
         incident_type=context.incident.incident_type,
@@ -107,6 +113,7 @@ def build_triage_input(
         last_seen=context.incident.last_seen.isoformat() if context.incident.last_seen else "",
         primary_entity=context.incident.primary_entity,
         target_entities=context.incident.target_entities,
+        deterministic_metrics=deterministic_metrics,
         signal_summaries=signal_summaries,
         candidate_evidence=ev_candidates,
         limited_context_events=limited_events,

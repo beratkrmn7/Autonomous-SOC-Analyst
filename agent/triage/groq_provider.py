@@ -58,7 +58,17 @@ class GroqTriageProvider(TriageProvider):
                 kwargs: Any = {}
                 return llm_with_tools.invoke(messages, **kwargs)
             except groq.RateLimitError as e:
-                raise ProviderRateLimitError(str(e))
+                retry_after: float | None = None
+                try:
+                    header = e.response.headers.get("retry-after")
+                    if header is not None:
+                        retry_after = float(header)
+                except (AttributeError, TypeError, ValueError):
+                    retry_after = None
+                raise ProviderRateLimitError(
+                    "Groq rate limit exceeded",
+                    retry_after_seconds=retry_after,
+                ) from e
             except groq.APITimeoutError as e:
                 raise ProviderTimeoutError(str(e))
             except groq.AuthenticationError as e:
@@ -87,7 +97,9 @@ class GroqTriageProvider(TriageProvider):
     def invoke(self, request: TriageProviderRequest) -> TriageProviderResponse:
         messages = [
             SystemMessage(content=request.system_prompt),
-            HumanMessage(content=f"Please analyze the following triage input:\n\n{request.triage_input.model_dump_json(indent=2)}")
+            HumanMessage(
+                content="Analyze the incident data and submit the triage verdict."
+            ),
         ]
         
         triage_input = request.context.get("triage_input")
@@ -110,7 +122,7 @@ class GroqTriageProvider(TriageProvider):
             res = search_tool(query)
             return res.model_dump_json(include={"query", "matched_event_ids", "truncated", "results"})
             
-        @tool
+        @tool(args_schema=TriageSubmission)
         def submit_triage_result(
             triage_verdict: str,
             incident_type: str,

@@ -3,9 +3,25 @@ from agent.parsers.base import BaseLogParser, ParseContext, ParserMatch
 from agent.schema import CanonicalLogEvent
 from agent.parsers.helpers import normalize_timestamp
 
+
+def _normalize_tcp_flags(value: Any) -> str | None:
+    """Normalize the PF representation needed by vendor-neutral detectors."""
+    if value is None:
+        return None
+
+    flags = str(value).strip()
+    if not flags:
+        return None
+
+    # PF renders an initial SYN packet as ``S``.  The canonical detection
+    # contract uses ``SYN``; composite flag sets retain their PF spelling so
+    # that SYN+ACK and other states are not mistaken for an initial probe.
+    return "SYN" if flags.upper() == "S" else flags
+
+
 class PfFirewallParser(BaseLogParser):
     name = "pf_firewall"
-    version = "2.0.0"
+    version = "2.0.1"
     priority = 80
 
     @classmethod
@@ -105,7 +121,7 @@ class PfFirewallParser(BaseLogParser):
             protocol=raw_record.get("proto"),
             action=action,
             action_reason=raw_record.get("deviceActionReason"),
-            tcp_flags=raw_record.get("tcpFlags"),
+            tcp_flags=_normalize_tcp_flags(raw_record.get("tcpFlags")),
             inbound_interface=raw_record.get("deviceInboundInterface"),
             outbound_interface=raw_record.get("deviceOutboundInterface"),
             inbound_zone=raw_record.get("deviceInboundZone"),

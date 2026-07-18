@@ -10,6 +10,22 @@ from agent.triage.exceptions import TriageProviderError
 from agent.triage.cache import TriageCache, build_cache_key
 from agent.config import get_settings
 
+
+_RETRYABLE_INVALID_OUTPUT_REASONS = {
+    ReviewReason.INVALID_LLM_OUTPUT,
+    ReviewReason.INVALID_TOOL_CALL,
+    ReviewReason.MIXED_TOOL_CALLS,
+    ReviewReason.MAXIMUM_ITERATIONS_REACHED,
+}
+
+_CORRECTIVE_RETRY_INSTRUCTION = """
+
+CORRECTIVE RETRY: The previous attempt did not produce one valid structured
+submission. Re-read the deterministic metrics, then call
+`submit_triage_result` exactly once with schema-valid arguments. Do not return
+free-form analysis instead of the tool call.
+"""
+
 class TriageRunner:
     def __init__(self, provider: TriageProvider, cache: Optional[TriageCache] = None):
         self.provider = provider
@@ -66,7 +82,13 @@ class TriageRunner:
             completed_at=""
         )
 
-        timeout_seconds = self.settings.triage_timeout_seconds
+        timeout_seconds = float(
+            getattr(
+                self.provider,
+                "timeout_seconds",
+                self.settings.triage_timeout_seconds,
+            )
+        )
         deadline = start_time + timeout_seconds
 
         system_prompt = build_system_prompt(triage_input)
@@ -102,14 +124,49 @@ class TriageRunner:
         )
         
         # 3. Invoke Provider with global deadline checks
-        timeout_seconds = self.settings.triage_timeout_seconds
-        
+        invalid_response_retry_count = 0
         try:
-            # Check deadline before invocation
-            if time.monotonic() - start_time > timeout_seconds:
-                raise Exception("triage_timeout")
-                
-            response = self.provider.invoke(request)
+            while True:
+                if time.monotonic() - start_time > timeout_seconds:
+                    raise Exception("triage_timeout")
+
+                try:
+                    response = self.provider.invoke(request)
+                except TriageProviderError as exc:
+                    can_retry = (
+                        exc.review_reason in _RETRYABLE_INVALID_OUTPUT_REASONS
+                        and invalid_response_retry_count
+                        < self.settings.llm_invalid_response_retries
+                        and time.monotonic() < deadline
+                    )
+                    if not can_retry:
+                        raise
+                    invalid_response_retry_count += 1
+                    request = TriageProviderRequest(
+                        incident_id=context.incident.incident_id,
+                        triage_input=triage_input,
+                        system_prompt=system_prompt + _CORRECTIVE_RETRY_INSTRUCTION,
+                        context={"triage_input": triage_input},
+                        deadline=deadline,
+                    )
+                    continue
+
+                if (
+                    response.submission is None
+                    and invalid_response_retry_count
+                    < self.settings.llm_invalid_response_retries
+                    and time.monotonic() < deadline
+                ):
+                    invalid_response_retry_count += 1
+                    request = TriageProviderRequest(
+                        incident_id=context.incident.incident_id,
+                        triage_input=triage_input,
+                        system_prompt=system_prompt + _CORRECTIVE_RETRY_INSTRUCTION,
+                        context={"triage_input": triage_input},
+                        deadline=deadline,
+                    )
+                    continue
+                break
             
             metrics.provider_prompt_tokens = response.prompt_tokens
             metrics.provider_completion_tokens = response.completion_tokens
@@ -117,7 +174,10 @@ class TriageRunner:
             metrics.iteration_count = getattr(response, 'iteration_count', 1)
             metrics.search_call_count = getattr(response, 'search_call_count', 0)
             metrics.tool_call_count = getattr(response, 'tool_call_count', 0)
-            metrics.retry_count = getattr(response, 'retry_count', 0)
+            metrics.retry_count = (
+                getattr(response, 'retry_count', 0)
+                + invalid_response_retry_count
+            )
             metrics.provider_latency_ms = (time.monotonic() - start_time) * 1000.0
             metrics.estimated_prompt_tokens = approx_tokens
             metrics.estimated_cost = None
@@ -138,6 +198,7 @@ class TriageRunner:
         except TriageProviderError as e:
             metrics.fallback_used = True
             metrics.review_reason = e.review_reason
+            metrics.retry_count = invalid_response_retry_count
             
             # Map timeout from provider specifically
             if e.review_reason == ReviewReason.PROVIDER_TIMEOUT:
