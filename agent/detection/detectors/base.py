@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from agent.schema import CanonicalLogEvent
 from agent.detection.models import DetectionSignal
 from agent.detection.config import DetectionSettings
+from agent.detection.contracts import DetectionRuleMetadata
 
 class DetectionContext(BaseModel):
     settings: DetectionSettings
@@ -13,11 +14,27 @@ class DetectionContext(BaseModel):
     source_name: str = "default"
 
 class BaseDetectionRule(ABC):
-    rule_id: str
-    version: str
-    name: str
-    family: str
-    priority: int
+    metadata: DetectionRuleMetadata
+
+    @property
+    def rule_id(self) -> str:
+        return self.metadata.rule_id
+
+    @property
+    def version(self) -> str:
+        return self.metadata.version
+
+    @property
+    def name(self) -> str:
+        return self.metadata.name
+
+    @property
+    def family(self) -> str:
+        return self.metadata.family
+
+    @property
+    def priority(self) -> int:
+        return self.metadata.priority
 
     @abstractmethod
     def evaluate(

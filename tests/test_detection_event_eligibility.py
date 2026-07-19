@@ -5,6 +5,7 @@ import pytest
 
 from agent.application.analysis_service import AnalysisService
 from agent.detection.detectors.base import BaseDetectionRule, DetectionContext
+from agent.detection.contracts import DetectionRuleMetadata
 from agent.detection.engine import DetectionEngine
 from agent.detection.models import DetectionSignal
 from agent.detection.registry import RuleRegistry
@@ -16,11 +17,15 @@ NOW = datetime(2026, 7, 10, 9, 51, tzinfo=timezone.utc)
 
 
 class RecordingRule(BaseDetectionRule):
-    rule_id = "recording_rule"
-    version = "1.0.0"
-    name = "Recording Rule"
-    family = "test"
-    priority = 1
+    metadata = DetectionRuleMetadata(
+        rule_id="recording_rule",
+        version="1.0.0",
+        name="Recording Rule",
+        family="test",
+        priority=1,
+        signal_type="recording_signal",
+        default_severity="informational",
+    )
 
     def __init__(self) -> None:
         self.evaluation_count = 0

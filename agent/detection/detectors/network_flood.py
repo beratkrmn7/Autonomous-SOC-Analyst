@@ -7,13 +7,23 @@ from agent.detection.detectors.base import BaseDetectionRule, DetectionContext
 from agent.detection.evidence import select_representative_evidence
 from agent.detection.correlation import sliding_window_scan
 from agent.detection.scoring import calculate_signal_confidence
+from agent.detection.contracts import DetectionRuleMetadata
 
 class NetworkFloodRule(BaseDetectionRule):
-    rule_id = "network_flood_dos"
-    version = "1.0.0"
-    name = "Network Flood (DoS) Attempt"
-    family = "network_dos"
-    priority = 100
+    metadata = DetectionRuleMetadata(
+        rule_id="network_flood_dos",
+        version="1.0.0",
+        name="Network Flood (DoS) Attempt",
+        family="network_dos",
+        priority=100,
+        supported_event_types=(),
+        required_fields=("src_ip", "dst_ip"),
+        signal_type="network_flood",
+        default_severity="high",
+        mitre_techniques=("T1498",),
+        window_setting="NETWORK_FLOOD_WINDOW_SECONDS",
+        minimum_events_setting="NETWORK_FLOOD_MIN_EVENTS",
+    )
 
     def evaluate(self, events: Sequence[CanonicalLogEvent], context: DetectionContext) -> List[DetectionSignal]:
         settings = context.settings

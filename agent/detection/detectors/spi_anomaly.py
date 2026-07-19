@@ -7,13 +7,23 @@ from agent.detection.detectors.base import BaseDetectionRule, DetectionContext
 from agent.detection.evidence import select_representative_evidence
 from agent.detection.correlation import sliding_window_scan
 from agent.detection.scoring import calculate_signal_confidence
+from agent.detection.contracts import DetectionRuleMetadata
 
 class SPIAnomalyRule(BaseDetectionRule):
-    rule_id = "spi_anomaly_burst"
-    version = "1.0.0"
-    name = "SPI Anomaly Burst"
-    family = "network_anomaly"
-    priority = 100
+    metadata = DetectionRuleMetadata(
+        rule_id="spi_anomaly_burst",
+        version="1.0.0",
+        name="SPI Anomaly Burst",
+        family="network_anomaly",
+        priority=100,
+        supported_event_types=(),
+        required_fields=("src_ip",),
+        signal_type="spi_anomaly",
+        default_severity="medium",
+        mitre_techniques=(),
+        window_setting="SPI_ANOMALY_WINDOW_SECONDS",
+        minimum_events_setting="SPI_ANOMALY_MIN_EVENTS",
+    )
 
     def evaluate(self, events: Sequence[CanonicalLogEvent], context: DetectionContext) -> List[DetectionSignal]:
         settings = context.settings

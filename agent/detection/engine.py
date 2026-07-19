@@ -12,10 +12,23 @@ from agent.detection.models import (
 from agent.detection.config import DetectionSettings, settings as default_settings
 from agent.detection.registry import RuleRegistry, default_registry
 from agent.detection.detectors.base import DetectionContext
+from agent.detection.contracts import (
+    RuleContractError,
+    select_rule_events,
+    validate_signal_contract,
+)
 from agent.detection.suppression import SuppressionPolicy
 from agent.detection.scoring import calculate_incident_severity, calculate_incident_confidence
 
 logger = logging.getLogger(__name__)
+
+
+def _bounded_identifier(value: str, max_length: int = 80) -> str:
+    safe_value = "".join(
+        character if character.isalnum() or character in "-_.:" else "_"
+        for character in value
+    )
+    return safe_value[:max_length] or "unknown"
 
 class DetectionEngine:
     def __init__(
@@ -107,11 +120,28 @@ class DetectionEngine:
         
         # 2. Rule Execution
         for rule in self.registry.get_all_rules():
+            rule_events = select_rule_events(eligible_events, rule.metadata)
+            if not rule_events:
+                continue
             try:
-                signals = rule.evaluate(eligible_events, context)
-                all_signals.extend(signals)
+                signals = rule.evaluate(rule_events, context)
+                input_event_ids = {event.event_id for event in rule_events}
+                for signal in signals:
+                    try:
+                        validate_signal_contract(signal, rule, input_event_ids)
+                    except RuleContractError as ex:
+                        warning = (
+                            f"Rule {rule.rule_id} produced invalid signal "
+                            f"{_bounded_identifier(signal.signal_id)}: {ex}"
+                        )
+                        warnings.append(warning)
+                        logger.warning(warning)
+                        continue
+                    all_signals.append(signal)
             except Exception as ex:
-                logger.error(f"Rule {rule.rule_id} failed: {ex}")
+                warning = f"Rule {rule.rule_id} failed: {type(ex).__name__}"
+                warnings.append(warning)
+                logger.warning(warning)
                 
         metrics.signal_count = len(all_signals)
 
@@ -151,7 +181,7 @@ class DetectionEngine:
             suppressed_signals=suppressed_signals,
             uncorrelated_event_ids=uncorrelated,
             metrics=metrics,
-            warnings=[]
+            warnings=warnings
         )
 
     def _deduplicate_signals(self, signals: List[DetectionSignal]) -> List[DetectionSignal]:

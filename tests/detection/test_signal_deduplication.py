@@ -26,4 +26,8 @@ def test_rdp_precedence():
     res = engine.analyze(events)
     # Both horizontal and remote service match, but RDP absorbs horizontal
     assert len(res.signals) == 1
+    assert res.signals[0].rule_id == "rdp_probe"
+    assert res.signals[0].rule_name == "RDP Probe"
     assert res.signals[0].signal_type == "rdp_probe"
+    assert len(res.incidents) == 1
+    assert res.incidents[0].incident_type == "rdp_probe"
