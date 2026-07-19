@@ -446,7 +446,10 @@ class AnalysisService:
         filter_result = self.filter_engine.filter_events(events)
         
         # 3. Detection
-        det_result = self.detection_engine.analyze(filter_result.candidates, filter_result.context)
+        # EventFilter assigns reporting/context roles; DetectionEngine owns
+        # eligibility and rule-level relevance. Passing the original collection
+        # keeps context and probable-noise events available to sequence rules.
+        det_result = self.detection_engine.analyze(events, filter_result.context)
         self._raise_if_cancelled(job_id)
         
         event_map = {e.event_id: e for e in events if e.event_id}

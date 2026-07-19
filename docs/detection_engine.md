@@ -6,11 +6,12 @@ The Phase 3 Detection and Correlation engine replaces heuristic scripts with a d
 
 Data flows through the following stages:
 
-1. **Eligibility Check**: Filters out logs without a timestamp or necessary identifiers.
-2. **Rule Evaluation**: A `RuleRegistry` loads all implementations of `BaseDetectionRule`. Each rule evaluates the log sequence using `sliding_window_scan` and generates `DetectionSignal` objects.
-3. **Signal Deduplication**: Redundant, identical signals across multiple windows are pruned.
-4. **Signal Suppression**: Allows IP whitelisting to silently discard acceptable traffic (e.g. Vuln Scanners).
-5. **Correlation & Incident Merging**: `DetectionSignal` objects related to the same primary entity or matching keys are merged into `IncidentBundle` objects.
+1. **Role Classification**: `EventFilter` classifies parsed events as candidate, context, or probable noise for reporting and context selection. This role does not define detection eligibility.
+2. **Eligibility Check**: All successfully parsed and semantically valid events are available to deterministic rules. `DetectionEngine` rejects invalid statuses, missing timestamps, and other ineligible inputs before rule execution.
+3. **Rule Evaluation**: A `RuleRegistry` loads all implementations of `BaseDetectionRule`. Each rule owns its relevance decisions, evaluates the eligible log sequence using `sliding_window_scan`, and generates `DetectionSignal` objects.
+4. **Signal Deduplication**: Redundant, identical signals across multiple windows are pruned.
+5. **Signal Suppression**: Allows IP whitelisting to silently discard acceptable traffic (e.g. Vuln Scanners).
+6. **Correlation & Incident Merging**: `DetectionSignal` objects related to the same primary entity or matching keys are merged into `IncidentBundle` objects. Role-classified context remains a bounded, same-source, nearby-time subset and cannot duplicate incident event IDs.
 
 ## Rule Development
 

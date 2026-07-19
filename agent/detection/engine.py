@@ -277,20 +277,24 @@ class DetectionEngine:
             
             # Find context events (up to MAX_CONTEXT_EVENTS_PER_INCIDENT)
             context_ids: List[str] = []
+            seen_context_ids: Set[str] = set()
             if context_events:
-                # Basic context matching: Same source IP, close in time, not in event_ids
+                # Basic context matching: same source IP, close in time, and not
+                # already incident evidence. The explicit set also protects
+                # against duplicate context input without expanding the bound.
                 start_window = first_seen.timestamp() - self.settings.INCIDENT_MERGE_WINDOW_SECONDS
                 end_window = last_seen.timestamp() + self.settings.INCIDENT_MERGE_WINDOW_SECONDS
                 
                 for ce in context_events:
                     if len(context_ids) >= self.settings.MAX_CONTEXT_EVENTS_PER_INCIDENT:
                         break
-                    if ce.event_id in all_event_ids:
+                    if ce.event_id in all_event_ids or ce.event_id in seen_context_ids:
                         continue
                     if ce.src_ip == entity and ce.timestamp:
                         ts = ce.timestamp.timestamp()
                         if start_window <= ts <= end_window:
                             context_ids.append(ce.event_id)
+                            seen_context_ids.add(ce.event_id)
             
             incident_type = sigs[0].signal_type if len(set(s.signal_type for s in sigs)) == 1 else f"multiple_{family}"
             merge_key = f"{family}_{bucket}"
