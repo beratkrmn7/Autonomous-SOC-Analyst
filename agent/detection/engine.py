@@ -244,7 +244,7 @@ class DetectionEngine:
                 
             # 2. Precedence: Specific Service Probe > Generic Horizontal Scan
             probes = [s for s in merged_by_rule if "probe" in s.rule_id.lower()]
-            scans = [s for s in merged_by_rule if "horizontal" in s.rule_id.lower()]
+            scans = [s for s in merged_by_rule if s.rule_id == "network_scan_horizontal"]
             others = [s for s in merged_by_rule if s not in probes and s not in scans]
             
             kept_scans = []

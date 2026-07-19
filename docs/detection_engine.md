@@ -56,6 +56,24 @@ The system includes pre-built rules for:
 - Network Flood (DoS)
 - SPI Anomaly Burst
 
+## Phase 6B.1 Advanced Scan Pack
+
+The advanced scan pack is deliberately batch-local: every correlation below uses only
+events supplied to the current `DetectionEngine.analyze()` call. It does not retain
+cross-file or cross-job state and does not query databases, Redis, OpenSearch, providers,
+or LLMs.
+
+| Rule ID | Signal type | Family | Primary grouping | Window setting | Scope |
+| --- | --- | --- | --- | --- | --- |
+| `low_and_slow_horizontal_scan` | `low_and_slow_horizontal_scan` | `network_scanning` | source, destination port, protocol | `LOW_SLOW_HORIZONTAL_WINDOW_SECONDS` | Batch-local |
+| `low_and_slow_vertical_scan` | `low_and_slow_vertical_scan` | `network_scanning` | source, destination, protocol | `LOW_SLOW_VERTICAL_WINDOW_SECONDS` | Batch-local |
+| `repeated_blocked_scanner` | `repeated_blocked_scanner` | `network_scanning` | source | `REPEATED_BLOCKED_SCANNER_WINDOW_SECONDS` | Batch-local |
+| `internal_lateral_scan` | `internal_lateral_scan` | `lateral_movement_candidate` | private source across private targets | `INTERNAL_LATERAL_SCAN_WINDOW_SECONDS` | Batch-local |
+| `subnet_sweep` | `subnet_sweep` | `network_scanning` | source, destination subnet, port, protocol | `SUBNET_SWEEP_WINDOW_SECONDS` | Batch-local |
+| `distributed_scan` | `distributed_scan` | `network_scanning` | destination, port, protocol | `DISTRIBUTED_SCAN_WINDOW_SECONDS` | Batch-local |
+| `multi_service_sweep` | `multi_service_sweep` | `service_probing` | source across service categories | `MULTI_SERVICE_SWEEP_WINDOW_SECONDS` | Batch-local |
+| `scan_followed_by_allowed_connection` | `scan_followed_by_allowed_connection` | `network_intrusion_candidate` | source plus related target/service sequence | `SCAN_THEN_ALLOWED_WINDOW_SECONDS` | Batch-local |
+
 ## Determinism
 
 Incidents and signals use a deterministic hashing mechanism (`generate_signal_id`, `generate_incident_id`) based on entities, temporal bounds, and correlated events. This ensures that processing the exact same batch of logs repeatedly produces exactly the same incidents.
