@@ -35,6 +35,16 @@ def register_default_rules():
         WebAdminPanelProbeRule,
         WinRmProbeRule,
     )
+    from agent.detection.detectors.tcp_spi_anomaly import (
+        RepeatedTcpResetAnomalyRule,
+        SpiFollowedByAllowedConnectionRule,
+        TcpAckScanRule,
+        TcpFinScanRule,
+        TcpNullScanRule,
+        TcpSynFinAnomalyRule,
+        TcpSynRstAnomalyRule,
+        TcpXmasScanRule,
+    )
 
     # Register rules
     default_registry.register(HorizontalScanRule())
@@ -58,3 +68,11 @@ def register_default_rules():
     default_registry.register(DockerDaemonProbeRule())
     default_registry.register(WebAdminPanelProbeRule())
     default_registry.register(LegacyCleartextServiceProbeRule())
+    default_registry.register(TcpNullScanRule())
+    default_registry.register(TcpXmasScanRule())
+    default_registry.register(TcpFinScanRule())
+    default_registry.register(TcpAckScanRule())
+    default_registry.register(TcpSynFinAnomalyRule())
+    default_registry.register(TcpSynRstAnomalyRule())
+    default_registry.register(RepeatedTcpResetAnomalyRule())
+    default_registry.register(SpiFollowedByAllowedConnectionRule())

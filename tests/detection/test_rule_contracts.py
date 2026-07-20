@@ -80,9 +80,9 @@ def test_all_default_rules_have_valid_deterministic_metadata() -> None:
     register_default_rules()
     second = [item.model_dump(mode="json") for item in default_registry.list_rule_metadata()]
 
-    assert len(first) == 21
+    assert len(first) == 29
     assert first == second
-    assert len({item["rule_id"] for item in first}) == 21
+    assert len({item["rule_id"] for item in first}) == 29
     for item in default_registry.list_rule_metadata():
         assert item.name and item.family and item.signal_type
         assert all(field in CanonicalLogEvent.model_fields for field in item.required_fields)

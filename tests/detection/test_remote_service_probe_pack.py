@@ -369,7 +369,7 @@ def test_multi_identity_profiles_remain_separate_signals() -> None:
     }
 
 
-def test_default_registry_expands_phase6b1_to_exactly_twenty_one_rules() -> None:
+def test_default_registry_retains_service_pack_with_twenty_nine_rules() -> None:
     register_default_rules()
     first = default_registry.get_all_rules()
     first_metadata = [rule.metadata.model_dump(mode="json") for rule in first]
@@ -380,8 +380,8 @@ def test_default_registry_expands_phase6b1_to_exactly_twenty_one_rules() -> None
     ]
     rule_ids = {rule.rule_id for rule in first}
 
-    assert len(first) == 21
-    assert len(rule_ids) == 21
+    assert len(first) == 29
+    assert len(rule_ids) == 29
     assert PHASE6B1_RULE_IDS <= rule_ids
     assert NEW_REGISTERED_RULE_IDS <= rule_ids
     assert first_metadata == second_metadata

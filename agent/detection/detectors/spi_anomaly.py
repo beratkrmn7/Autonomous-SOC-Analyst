@@ -8,6 +8,7 @@ from agent.detection.evidence import select_representative_evidence
 from agent.detection.correlation import sliding_window_scan
 from agent.detection.scoring import calculate_signal_confidence
 from agent.detection.contracts import DetectionRuleMetadata
+from agent.detection.detectors.scan_helpers import is_spi_anomaly_event
 
 class SPIAnomalyRule(BaseDetectionRule):
     metadata = DetectionRuleMetadata(
@@ -28,27 +29,15 @@ class SPIAnomalyRule(BaseDetectionRule):
     def evaluate(self, events: Sequence[CanonicalLogEvent], context: DetectionContext) -> List[DetectionSignal]:
         settings = context.settings
         
-        # SPI events are strictly defined by their action_reason or explicit markers
+        # SPI events are strictly defined by canonical or explicit markers.
         groups = defaultdict(list)
         for e in events:
             if not e.src_ip:
                 continue
-            is_spi = False
-            # Check canonical action_reason
-            if e.action_reason and "spi" in str(e.action_reason).lower():
-                is_spi = True
-            # Check event_outcome or action for spi related blocks
-            elif e.event_outcome and "spi" in str(e.event_outcome).lower():
-                is_spi = True
-            elif e.action and "spi" in str(e.action).lower():
-                is_spi = True
-            # Check metadata or fallback to safe_message_excerpt checking
-            elif e.parser_metadata and e.parser_metadata.get("spi_anomaly", False):
-                is_spi = True
-            elif settings.SPI_ANOMALY_FALLBACK_RAW_MATCH and e.safe_message_excerpt and "blocked by spi" in str(e.safe_message_excerpt).lower():
-                is_spi = True
-                
-            if is_spi:
+            if is_spi_anomaly_event(
+                e,
+                fallback_raw_match=settings.SPI_ANOMALY_FALLBACK_RAW_MATCH,
+            ):
                 groups[e.src_ip].append(e)
 
         signals = []

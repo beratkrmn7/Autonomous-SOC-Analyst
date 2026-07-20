@@ -3,6 +3,7 @@ from typing import Any, Dict, Union
 from agent.parsers.base import BaseLogParser, ParseContext, ParserMatch
 from agent.parsers.helpers import normalize_timestamp
 from agent.schema import CanonicalLogEvent
+from agent.tcp_flags import canonicalize_tcp_flags
 
 
 MAX_METADATA_TEXT_CHARS = 128
@@ -33,24 +34,9 @@ def _is_explicit_spi_event(raw_record: Dict[str, Any]) -> bool:
     )
 
 
-def _normalize_tcp_flags(value: Any) -> str | None:
-    """Normalize the PF representation needed by vendor-neutral detectors."""
-    if value is None:
-        return None
-
-    flags = str(value).strip()
-    if not flags:
-        return None
-
-    # PF renders an initial SYN packet as ``S``.  The canonical detection
-    # contract uses ``SYN``; composite flag sets retain their PF spelling so
-    # that SYN+ACK and other states are not mistaken for an initial probe.
-    return "SYN" if flags.upper() == "S" else flags
-
-
 class PfFirewallParser(BaseLogParser):
     name = "pf_firewall"
-    version = "2.1.0"
+    version = "2.2.0"
     priority = 80
 
     @classmethod
@@ -103,9 +89,21 @@ class PfFirewallParser(BaseLogParser):
         action_reason = raw_record.get("deviceActionReason")
         safe_action_reason = _bounded_text(action_reason, MAX_REASON_CHARS)
         pf_event_type = _bounded_text(raw_record.get("type"), MAX_METADATA_TEXT_CHARS)
+        tcp_flags_present = "tcpFlags" in raw_record
+        original_tcp_flags = _bounded_text(
+            raw_record.get("tcpFlags"), MAX_METADATA_TEXT_CHARS
+        )
+        normalized_tcp_flags = canonicalize_tcp_flags(
+            raw_record.get("tcpFlags"),
+            field_present=tcp_flags_present,
+        )
         parser_metadata: Dict[str, Any] = {
             "original_device_action": original_device_action,
             "spi_anomaly": spi_anomaly,
+            "tcp_flags_present": tcp_flags_present,
+            "original_tcp_flags": original_tcp_flags,
+            "tcp_flag_tokens": list(normalized_tcp_flags.tokens),
+            "tcp_flags_explicit_none": normalized_tcp_flags.explicit_none,
         }
         if pf_event_type is not None:
             parser_metadata["pf_event_type"] = pf_event_type
@@ -122,9 +120,8 @@ class PfFirewallParser(BaseLogParser):
         dpt = f":{destination_port}" if destination_port else ""
 
         raw_msg_parts = [f"{act} {proto} {src}{spt} -> {dst}{dpt}"]
-        tcp_flags = _bounded_text(raw_record.get("tcpFlags"), 32)
-        if tcp_flags:
-            raw_msg_parts.append(f"flags={tcp_flags}")
+        if original_tcp_flags is not None:
+            raw_msg_parts.append(f"flags={original_tcp_flags[:32]}")
         inbound_zone = _bounded_text(raw_record.get("deviceInboundZone"), 64)
         if inbound_zone:
             raw_msg_parts.append(f"inbound_zone={inbound_zone}")
@@ -171,7 +168,7 @@ class PfFirewallParser(BaseLogParser):
             protocol=raw_record.get("proto"),
             action=action,
             action_reason=action_reason,
-            tcp_flags=_normalize_tcp_flags(raw_record.get("tcpFlags")),
+            tcp_flags=normalized_tcp_flags.canonical,
             inbound_interface=raw_record.get("deviceInboundInterface"),
             outbound_interface=raw_record.get("deviceOutboundInterface"),
             inbound_zone=raw_record.get("deviceInboundZone"),
@@ -195,6 +192,9 @@ class PfFirewallParser(BaseLogParser):
             parser_confidence=0.95,
             schema_fingerprint=context.schema_fingerprint,
             parse_status="parsed",
+            parse_warnings=(
+                [] if normalized_tcp_flags.recognized else ["unrecognized_tcp_flags"]
+            ),
             source_name=context.source_name,
             source_line=context.line_number,
         )

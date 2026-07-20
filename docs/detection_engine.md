@@ -92,6 +92,51 @@ authentication, exploitation, compromise, or remote execution.
 | `web_admin_panel_probe` | `web_admin_panel_probe` | 8000, 8080, 8443, 8888, 9000, 9443, 10000 | `service_probing` | medium | source + web-admin profile | common window + `WEB_ADMIN_PROBE_*` | Batch-local |
 | `legacy_cleartext_service_probe` | `telnet_probe`, `ftp_probe` | 23; 20, 21 | `service_probing` | medium | source + cleartext-service profile | `EXTENDED_SERVICE_PROBE_*` | Batch-local |
 
+## Phase 6C TCP and SPI Anomaly Pack
+
+TCP flags are normalized before detection by a vendor-neutral utility. Compact PF
+characters and verbose tokens produce one deterministic representation in this order:
+`FIN,SYN,RST,PSH,ACK,URG,ECE,CWR`.
+
+| Input | Canonical value |
+| --- | --- |
+| `S` | `SYN` |
+| `SA` | `SYN,ACK` |
+| `SR` | `SYN,RST` |
+| `AR` | `RST,ACK` |
+| `AFR` or `RFA` | `FIN,RST,ACK` |
+| `AFP` | `FIN,PSH,ACK` |
+| `FPU`, `FIN PSH URG`, or `FIN|PSH|URG` | `FIN,PSH,URG` |
+
+A missing flag field remains `None` and is not evidence of a NULL scan. An explicitly
+present empty value (`""`, `0`, `NONE`, `NULL`, or `-`) becomes `NONE`. Unknown or
+partially invalid values, including `.`, are not guessed and cannot match a flag rule.
+PF parser metadata records only bounded original flags, deterministic tokens, field
+presence, and explicit-none state.
+
+| Rule ID | Exact matching behavior | Family | Severity | Threshold group |
+| --- | --- | --- | --- | --- |
+| `tcp_null_scan` | Explicit `NONE` only | `network_scanning` | medium | `TCP_FLAG_SCAN_*` |
+| `tcp_xmas_scan` | Exactly `FIN,PSH,URG`; ECE/CWR extras are rejected | `network_scanning` | medium | `TCP_FLAG_SCAN_*` |
+| `tcp_fin_scan` | Exactly `FIN` | `network_scanning` | medium | `TCP_FLAG_SCAN_*` |
+| `tcp_ack_scan` | Exactly `ACK` | `network_scanning` | medium | Common diversity plus `TCP_ACK_SCAN_*` |
+| `tcp_syn_fin_anomaly` | Contains `SYN` and `FIN` | `network_anomaly` | high | Common diversity plus `TCP_INVALID_COMBINATION_*` |
+| `tcp_syn_rst_anomaly` | Contains `SYN` and `RST` | `network_anomaly` | medium | Common diversity plus `TCP_INVALID_COMBINATION_*` |
+| `repeated_tcp_reset_anomaly` | Contains `RST` without `SYN` | `network_anomaly` | medium | `TCP_RESET_ANOMALY_*` |
+| `spi_followed_by_allowed_connection` | Repeated explicit SPI blocks followed by a related allowed destination/service | `network_intrusion_candidate` | high | `SPI_THEN_ALLOWED_*` |
+
+Common flag scans use a 300-second window, five events, three targets or three ports,
+and a 0.60 blocked ratio. ACK scans require ten events and a 0.85 blocked ratio;
+invalid SYN combinations require five events and a 0.80 blocked ratio. Repeated resets
+use a 300-second window, ten events, three targets or ports, and a 0.60 blocked ratio.
+The SPI sequence requires three preceding explicit SPI blocks within 600 seconds. The
+allowed event must occur later for the same source, relate to an affected destination,
+and use the same port or existing service profile; it remains signal evidence.
+
+All 29 registered rules remain batch-local to one `DetectionEngine.analyze()` call.
+TCP anomaly, probe, and SPI sequence evidence indicates suspicious network behavior;
+it is not proof of successful authentication, exploitation, compromise, or execution.
+
 ## Determinism
 
 Incidents and signals use a deterministic hashing mechanism (`generate_signal_id`, `generate_incident_id`) based on entities, temporal bounds, and correlated events. This ensures that processing the exact same batch of logs repeatedly produces exactly the same incidents.

@@ -36,6 +36,10 @@ def test_pf_firewall_preserves_spi_action_metadata_and_excerpt():
     assert event.parser_metadata == {
         "original_device_action": "blocked by spi",
         "spi_anomaly": True,
+        "tcp_flags_present": True,
+        "original_tcp_flags": "AR",
+        "tcp_flag_tokens": ["RST", "ACK"],
+        "tcp_flags_explicit_none": False,
     }
     assert "reason=unexpected tcp flags" in event.safe_message_excerpt
     assert "spi=true" in event.safe_message_excerpt
@@ -64,6 +68,10 @@ def test_pf_firewall_normal_block_is_not_spi():
     assert event.parser_metadata == {
         "original_device_action": "block",
         "spi_anomaly": False,
+        "tcp_flags_present": True,
+        "original_tcp_flags": "S",
+        "tcp_flag_tokens": ["SYN"],
+        "tcp_flags_explicit_none": False,
     }
     assert "spi=true" not in event.safe_message_excerpt
 
@@ -122,6 +130,7 @@ def test_pf_firewall_metadata_and_excerpt_are_bounded():
         "src": "192.0.2.10",
         "dst": "198.51.100.20",
         "proto": "tcp",
+        "tcpFlags": "S" * 129,
         "type": "synthetic",
     }
 
@@ -135,6 +144,9 @@ def test_pf_firewall_metadata_and_excerpt_are_bounded():
     assert len(event.parser_metadata["original_device_action"]) == 128
     assert event.parser_metadata["pf_event_type"] == "synthetic"
     assert event.parser_metadata["spi_anomaly"] is True
+    assert len(event.parser_metadata["original_tcp_flags"]) == 128
+    assert event.parser_metadata["tcp_flag_tokens"] == []
+    assert event.parse_warnings == ["unrecognized_tcp_flags"]
     assert len(event.safe_message_excerpt) <= 512
     assert "spi=true" in event.safe_message_excerpt
 
@@ -165,7 +177,7 @@ def test_pf_firewall_fqdn_parsing_list():
     assert evt.destination_fqdns == ["d1.example.test", "d2.example.test"]
 
 
-def test_pf_firewall_normalizes_initial_syn_without_changing_composite_flags():
+def test_pf_firewall_normalizes_initial_syn_and_composite_flags():
     p = PfFirewallParser()
     ctx = ParseContext(source_name="t", observed_at="2026-07-10T00:00:00Z")
 
@@ -174,4 +186,4 @@ def test_pf_firewall_normalizes_initial_syn_without_changing_composite_flags():
 
     assert syn.tcp_flags == "SYN"
     assert "flags=S" in syn.safe_message_excerpt
-    assert syn_ack.tcp_flags == "SA"
+    assert syn_ack.tcp_flags == "SYN,ACK"

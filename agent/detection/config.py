@@ -88,6 +88,72 @@ class DetectionSettings(BaseModel):
         le=1.0,
     )
 
+    # TCP Flag Scan and Invalid Combination Anomalies
+    TCP_FLAG_SCAN_WINDOW_SECONDS: int = Field(
+        default=int(os.getenv("TCP_FLAG_SCAN_WINDOW_SECONDS", "300")), gt=0
+    )
+    TCP_FLAG_SCAN_MIN_EVENTS: int = Field(
+        default=int(os.getenv("TCP_FLAG_SCAN_MIN_EVENTS", "5")), gt=0
+    )
+    TCP_FLAG_SCAN_MIN_DISTINCT_TARGETS: int = Field(
+        default=int(os.getenv("TCP_FLAG_SCAN_MIN_DISTINCT_TARGETS", "3")), gt=0
+    )
+    TCP_FLAG_SCAN_MIN_DISTINCT_PORTS: int = Field(
+        default=int(os.getenv("TCP_FLAG_SCAN_MIN_DISTINCT_PORTS", "3")), gt=0
+    )
+    TCP_FLAG_SCAN_MIN_BLOCK_RATIO: float = Field(
+        default=float(os.getenv("TCP_FLAG_SCAN_MIN_BLOCK_RATIO", "0.60")),
+        ge=0.0,
+        le=1.0,
+    )
+    TCP_ACK_SCAN_MIN_EVENTS: int = Field(
+        default=int(os.getenv("TCP_ACK_SCAN_MIN_EVENTS", "10")), gt=0
+    )
+    TCP_ACK_SCAN_MIN_BLOCK_RATIO: float = Field(
+        default=float(os.getenv("TCP_ACK_SCAN_MIN_BLOCK_RATIO", "0.85")),
+        ge=0.0,
+        le=1.0,
+    )
+    TCP_INVALID_COMBINATION_MIN_EVENTS: int = Field(
+        default=int(os.getenv("TCP_INVALID_COMBINATION_MIN_EVENTS", "5")), gt=0
+    )
+    TCP_INVALID_COMBINATION_MIN_BLOCK_RATIO: float = Field(
+        default=float(
+            os.getenv("TCP_INVALID_COMBINATION_MIN_BLOCK_RATIO", "0.80")
+        ),
+        ge=0.0,
+        le=1.0,
+    )
+
+    # Repeated TCP Reset Anomaly
+    TCP_RESET_ANOMALY_WINDOW_SECONDS: int = Field(
+        default=int(os.getenv("TCP_RESET_ANOMALY_WINDOW_SECONDS", "300")), gt=0
+    )
+    TCP_RESET_ANOMALY_MIN_EVENTS: int = Field(
+        default=int(os.getenv("TCP_RESET_ANOMALY_MIN_EVENTS", "10")), gt=0
+    )
+    TCP_RESET_ANOMALY_MIN_DISTINCT_TARGETS: int = Field(
+        default=int(os.getenv("TCP_RESET_ANOMALY_MIN_DISTINCT_TARGETS", "3")),
+        gt=0,
+    )
+    TCP_RESET_ANOMALY_MIN_DISTINCT_PORTS: int = Field(
+        default=int(os.getenv("TCP_RESET_ANOMALY_MIN_DISTINCT_PORTS", "3")),
+        gt=0,
+    )
+    TCP_RESET_ANOMALY_MIN_BLOCK_RATIO: float = Field(
+        default=float(os.getenv("TCP_RESET_ANOMALY_MIN_BLOCK_RATIO", "0.60")),
+        ge=0.0,
+        le=1.0,
+    )
+
+    # Explicit SPI Blocks Followed by an Allowed Connection
+    SPI_THEN_ALLOWED_WINDOW_SECONDS: int = Field(
+        default=int(os.getenv("SPI_THEN_ALLOWED_WINDOW_SECONDS", "600")), gt=0
+    )
+    SPI_THEN_ALLOWED_MIN_SPI_EVENTS: int = Field(
+        default=int(os.getenv("SPI_THEN_ALLOWED_MIN_SPI_EVENTS", "3")), gt=0
+    )
+
     # SPI Anomaly
     SPI_ANOMALY_WINDOW_SECONDS: int = int(os.getenv("SPI_ANOMALY_WINDOW_SECONDS", "300"))
     SPI_ANOMALY_MIN_EVENTS: int = int(os.getenv("SPI_ANOMALY_MIN_EVENTS", "5"))

@@ -1,9 +1,9 @@
 import ipaddress
-import re
 from collections.abc import Iterable, Sequence
 from types import MappingProxyType
 
 from agent.schema import CanonicalLogEvent
+from agent.tcp_flags import canonicalize_tcp_flags, parse_tcp_flag_tokens
 
 
 BLOCKED_ACTIONS = frozenset({"block", "blocked", "deny", "denied", "drop", "dropped", "reject", "rejected"})
@@ -44,15 +44,82 @@ def is_allowed(event: CanonicalLogEvent) -> bool:
     return bool(event.action and event.action.strip().lower() in ALLOWED_ACTIONS)
 
 
+def event_tcp_flag_tokens(event: CanonicalLogEvent) -> frozenset[str]:
+    return parse_tcp_flag_tokens(event.tcp_flags)
+
+
+def has_exact_tcp_flags(
+    event: CanonicalLogEvent,
+    expected: frozenset[str],
+) -> bool:
+    return event_tcp_flag_tokens(event) == expected
+
+
+def has_tcp_flags(
+    event: CanonicalLogEvent,
+    required: frozenset[str],
+) -> bool:
+    return required.issubset(event_tcp_flag_tokens(event))
+
+
+def is_explicit_tcp_null(event: CanonicalLogEvent) -> bool:
+    metadata = event.parser_metadata or {}
+    if (
+        metadata.get("tcp_flags_present") is True
+        and metadata.get("tcp_flags_explicit_none") is True
+    ):
+        return True
+    normalized = canonicalize_tcp_flags(
+        event.tcp_flags,
+        field_present=event.tcp_flags is not None,
+    )
+    return normalized.explicit_none
+
+
 def is_tcp_syn(event: CanonicalLogEvent) -> bool:
-    if normalized_protocol(event) != "TCP" or not event.tcp_flags:
+    if normalized_protocol(event) != "TCP":
         return False
-    tokens = {
-        token
-        for token in re.split(r"[^A-Z]+", event.tcp_flags.upper())
-        if token
-    }
+    tokens = event_tcp_flag_tokens(event)
     return "SYN" in tokens and "ACK" not in tokens
+
+
+def is_spi_anomaly_event(
+    event: CanonicalLogEvent,
+    *,
+    fallback_raw_match: bool,
+) -> bool:
+    if event.action_reason and "spi" in str(event.action_reason).lower():
+        return True
+    if event.event_outcome and "spi" in str(event.event_outcome).lower():
+        return True
+    if event.action and "spi" in str(event.action).lower():
+        return True
+    if event.parser_metadata and event.parser_metadata.get("spi_anomaly") is True:
+        return True
+    return bool(
+        fallback_raw_match
+        and event.safe_message_excerpt
+        and "blocked by spi" in str(event.safe_message_excerpt).lower()
+    )
+
+
+def is_spi_block_event(
+    event: CanonicalLogEvent,
+    *,
+    fallback_raw_match: bool,
+) -> bool:
+    if not is_spi_anomaly_event(event, fallback_raw_match=fallback_raw_match):
+        return False
+    action = str(event.action).lower() if event.action else ""
+    return bool(
+        is_blocked(event)
+        or any(marker in action for marker in ("block", "deny", "drop"))
+        or (
+            fallback_raw_match
+            and event.safe_message_excerpt
+            and "blocked by spi" in str(event.safe_message_excerpt).lower()
+        )
+    )
 
 
 def event_ratios(events: Sequence[CanonicalLogEvent]) -> tuple[float, float]:

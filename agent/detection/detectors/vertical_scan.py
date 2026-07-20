@@ -8,6 +8,7 @@ from agent.detection.evidence import select_representative_evidence
 from agent.detection.correlation import sliding_window_scan
 from agent.detection.scoring import calculate_signal_confidence
 from agent.detection.contracts import DetectionRuleMetadata
+from agent.detection.detectors.scan_helpers import is_tcp_syn
 
 class VerticalScanRule(BaseDetectionRule):
     metadata = DetectionRuleMetadata(
@@ -57,7 +58,7 @@ class VerticalScanRule(BaseDetectionRule):
                     return False, {}
                     
                 if str(protocol).upper() == "TCP":
-                    syn_count = sum(1 for e in window if getattr(e, "tcp_flags", None) == "SYN")
+                    syn_count = sum(1 for e in window if is_tcp_syn(e))
                     if syn_count / len(window) < settings.VERTICAL_SCAN_MIN_SYN_RATIO:
                         return False, {}
                         

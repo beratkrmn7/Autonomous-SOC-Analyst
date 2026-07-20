@@ -374,12 +374,12 @@ def test_advanced_scan_rule_negative_or_below_threshold(case: RuleCase) -> None:
     assert case.rule.evaluate(case.negative_events(), context) == []
 
 
-def test_default_registry_contains_exactly_twenty_one_valid_rules() -> None:
+def test_default_registry_contains_exactly_twenty_nine_valid_rules() -> None:
     register_default_rules()
     rules = default_registry.get_all_rules()
 
-    assert len(rules) == 21
-    assert len({rule.rule_id for rule in rules}) == 21
+    assert len(rules) == 29
+    assert len({rule.rule_id for rule in rules}) == 29
     assert all(
         DetectionRuleMetadata.model_validate(rule.metadata.model_dump()) == rule.metadata
         for rule in rules
