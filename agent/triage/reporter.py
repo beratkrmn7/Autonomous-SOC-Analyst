@@ -31,9 +31,11 @@ def _render_scan_probe_facts(facts: ScanProbeFacts) -> List[str]:
 
 
 def _render_exposure_facts(facts: FirewallExposureFacts) -> List[str]:
-    dest_ports = ", ".join(str(port) for port in facts.destination_ports) or "none"
-    translated_ports = (
-        ", ".join(str(port) for port in facts.translated_destination_ports) or "none"
+    original_ports = (
+        ", ".join(str(port) for port in facts.original_destination_ports) or "none"
+    )
+    effective_ports = (
+        ", ".join(str(port) for port in facts.effective_destination_ports) or "none"
     )
     zones = (
         ", ".join(facts.inbound_zones) + " -> " + ", ".join(facts.outbound_zones)
@@ -44,10 +46,13 @@ def _render_exposure_facts(facts: FirewallExposureFacts) -> List[str]:
         "\n## Deterministic Firewall Exposure Facts",
         f"- Exposure type: {facts.incident_type}",
         f"- Service: {facts.service or 'unclassified'}",
-        f"- Source: {facts.primary_entity} (external sources: {facts.external_source_count})",
-        f"- Effective destination(s): {', '.join(facts.destination_ips) or 'unknown'}",
-        f"- Destination ports: {dest_ports}",
-        f"- Translated destination ports: {translated_ports}",
+        f"- Source IPs: {', '.join(facts.source_ips) or 'unknown'}"
+        f" (external: {', '.join(facts.external_source_ips) or 'none'})",
+        f"- Original destination IPs: {', '.join(facts.original_destination_ips) or 'unknown'}",
+        f"- Original destination ports: {original_ports}",
+        f"- Effective destination IPs: {', '.join(facts.effective_destination_ips) or 'unknown'}",
+        f"- Effective destination ports: {effective_ports}",
+        f"- Incident primary entity: {facts.incident_primary_entity}",
         f"- Zones (inbound -> outbound): {zones}",
         f"- NAT observed: {'yes' if facts.nat_event_count else 'no'}",
         f"- Allowed events: {facts.allowed_event_count} | Blocked events: {facts.blocked_event_count}",

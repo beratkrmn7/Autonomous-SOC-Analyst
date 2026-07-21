@@ -132,7 +132,9 @@ def _run_pipeline(
     severity: str,
     confidence: float,
     summary: str,
-) -> str:
+    claims: list[dict] | None = None,
+    return_state: bool = False,
+):
     context = TriageIncidentContext(incident=incident, events=events)
     evidence = {
         "event_id": events[0].event_id,
@@ -144,6 +146,12 @@ def _run_pipeline(
     }
     triage_input = build_triage_input(context, [], [evidence])
     evidence_id = triage_input.candidate_evidence[0].evidence_id
+    resolved_claims = []
+    for claim in claims or []:
+        resolved = dict(claim)
+        resolved["supporting_evidence_ids"] = [evidence_id]
+        resolved["supporting_event_ids"] = [events[0].event_id]
+        resolved_claims.append(resolved)
 
     state = {
         "incident_id": incident.incident_id,
@@ -155,7 +163,7 @@ def _run_pipeline(
             "confidence_score": confidence,
             "summary": summary,
             "selected_evidence_ids": [evidence_id],
-            "claims": [],
+            "claims": resolved_claims,
         },
         "triage_verdict": verdict,
         "incident_type": incident.incident_type,
@@ -168,6 +176,8 @@ def _run_pipeline(
     state.update(evidence_validation_node(state))
     state.update(action_recommendation_node(state))
     report = reporter_node(state)["final_report"]
+    if return_state:
+        return report, state
     return report
 
 
@@ -199,6 +209,68 @@ def test_firewall_exposure_report_contains_no_compromise_claims() -> None:
         assert phrase not in lowered
 
     assert "SUSPICIOUS_ACTIVITY" in report  # capped from confirmed_incident
+
+
+# --- Merge-blocker fix 2: ClaimType.OTHER cannot bypass the firewall-only
+# claim guardrail --------------------------------------------------------
+
+
+def test_claim_type_other_compromise_statement_is_rejected_and_never_reported() -> None:
+    incident, events = _exposure_incident()
+    compromise_statement = "The host was compromised and the attacker gained access."
+
+    report, state = _run_pipeline(
+        incident,
+        events,
+        verdict="suspicious_activity",
+        severity="high",
+        confidence=0.7,
+        summary="summary",
+        claims=[
+            {
+                "claim_id": "claim-1",
+                "claim_type": "other",
+                "statement": compromise_statement,
+            }
+        ],
+        return_state=True,
+    )
+
+    assert state["validated_claims"] == []
+    rejected_reasons = {c["reason"] for c in state["rejected_claims"]}
+    assert "firewall_only_evidence_insufficient" in rejected_reasons
+    assert compromise_statement not in report
+    assert "No high-impact claims accepted." in report
+
+
+def test_legacy_non_firewall_claim_type_other_is_still_accepted() -> None:
+    """Legacy (non-firewall-only) incidents must keep accepting a
+    well-supported ClaimType.OTHER claim - only firewall-only exposure/
+    sequence incidents reject it."""
+    from agent.triage.claims import validate_claims
+    from agent.triage.enums import ClaimType
+    from agent.triage.models import EvidenceValidationResult, TriageClaim
+
+    claim = TriageClaim(
+        claim_id="claim-1",
+        claim_type=ClaimType.OTHER,
+        statement="The traffic pattern matches a known benign backup job.",
+        supporting_event_ids=["event-1"],
+        supporting_evidence_ids=["evidence-1"],
+    )
+    evidence = [
+        EvidenceValidationResult(
+            evidence_id="evidence-1", event_id="event-1", status="validated"
+        )
+    ]
+
+    accepted, rejected = validate_claims(
+        [claim], evidence, firewall_only_evidence=False
+    )
+
+    assert rejected == []
+    assert len(accepted) == 1
+    assert accepted[0].claim_id == "claim-1"
 
 
 def test_firewall_exposure_report_uses_deterministic_summary_over_fake_provider_summary() -> None:

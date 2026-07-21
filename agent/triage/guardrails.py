@@ -107,14 +107,21 @@ class ScanProbeFacts(BaseModel):
 class FirewallExposureFacts(BaseModel):
     kind: Literal["firewall_exposure"] = "firewall_exposure"
     incident_type: str
-    primary_entity: str
+    # Renamed from `primary_entity`: exposure rules intentionally use
+    # different entity viewpoints (for example DNAT/WAN-to-LAN rules set the
+    # internal effective destination as IncidentBundle.primary_entity, not
+    # the network source). Never labeled "Source" - see source_ips below.
+    incident_primary_entity: str
     service: str | None = None
     total_event_count: int
     allowed_event_count: int
     blocked_event_count: int
-    external_source_count: int
-    destination_ips: list[str]
-    destination_ports: list[int]
+    source_ips: list[str]
+    external_source_ips: list[str]
+    original_destination_ips: list[str]
+    original_destination_ports: list[int]
+    effective_destination_ips: list[str]
+    effective_destination_ports: list[int]
     translated_destination_ips: list[str]
     translated_destination_ports: list[int]
     inbound_zones: list[str]
@@ -250,6 +257,16 @@ def _bidirectional_related_flow_observed(
     )
 
 
+def _effective_destination_ip(event: CanonicalLogEvent) -> str | None:
+    return event.translated_dst_ip or event.dst_ip
+
+
+def _effective_destination_port(event: CanonicalLogEvent) -> int | None:
+    if event.translated_dst_port is not None:
+        return event.translated_dst_port
+    return event.dst_port
+
+
 def _derive_exposure_facts(
     context: TriageIncidentContext,
     incident_type: str,
@@ -259,13 +276,24 @@ def _derive_exposure_facts(
 
     allowed_events = [event for event in events if is_allowed(event)]
     blocked_count = sum(1 for event in events if is_blocked(event))
-    external_sources = {
-        event.src_ip
-        for event in events
-        if event.src_ip and not is_private_unicast(event.src_ip)
+
+    source_ips = {event.src_ip for event in events if event.src_ip}
+    external_source_ips = {ip for ip in source_ips if not is_private_unicast(ip)}
+
+    original_destination_ips = {event.dst_ip for event in events if event.dst_ip}
+    original_destination_ports = {
+        event.dst_port for event in events if event.dst_port is not None
     }
-    destination_ips = {event.dst_ip for event in events if event.dst_ip}
-    destination_ports = {event.dst_port for event in events if event.dst_port is not None}
+    effective_destination_ips = {
+        ip
+        for event in events
+        if (ip := _effective_destination_ip(event)) is not None
+    }
+    effective_destination_ports = {
+        port
+        for event in events
+        if (port := _effective_destination_port(event)) is not None
+    }
     translated_destination_ips = {
         event.translated_dst_ip for event in events if event.translated_dst_ip
     }
@@ -298,21 +326,30 @@ def _derive_exposure_facts(
     )
 
     service = None
-    for port in sorted(destination_ports) + sorted(translated_destination_ports):
+    for port in sorted(effective_destination_ports) + sorted(original_destination_ports):
         service = classify_service(port)
         if service:
             break
 
     return FirewallExposureFacts(
         incident_type=incident_type,
-        primary_entity=incident.primary_entity,
+        incident_primary_entity=incident.primary_entity,
         service=service,
         total_event_count=len(events),
         allowed_event_count=len(allowed_events),
         blocked_event_count=blocked_count,
-        external_source_count=len(external_sources),
-        destination_ips=bounded_sorted_values(destination_ips, limit=MAX_FACT_LIST_ITEMS),
-        destination_ports=_bounded_sorted_ports(destination_ports),
+        source_ips=bounded_sorted_values(source_ips, limit=MAX_FACT_LIST_ITEMS),
+        external_source_ips=bounded_sorted_values(
+            external_source_ips, limit=MAX_FACT_LIST_ITEMS
+        ),
+        original_destination_ips=bounded_sorted_values(
+            original_destination_ips, limit=MAX_FACT_LIST_ITEMS
+        ),
+        original_destination_ports=_bounded_sorted_ports(original_destination_ports),
+        effective_destination_ips=bounded_sorted_values(
+            effective_destination_ips, limit=MAX_FACT_LIST_ITEMS
+        ),
+        effective_destination_ports=_bounded_sorted_ports(effective_destination_ports),
         translated_destination_ips=bounded_sorted_values(
             translated_destination_ips, limit=MAX_FACT_LIST_ITEMS
         ),
@@ -415,20 +452,35 @@ def _build_scan_probe_summary(facts: ScanProbeFacts) -> str:
 
 def _build_exposure_summary(facts: FirewallExposureFacts) -> str:
     service_text = f" to a {facts.service} service" if facts.service else " service"
+    source_text = ", ".join(facts.source_ips) or facts.incident_primary_entity or "an unknown source"
+
     if not facts.policy_allow_observed:
         return (
             f"The firewall recorded {facts.total_event_count} event(s){service_text} "
-            f"from {facts.primary_entity}, with {facts.blocked_event_count} blocked and "
+            f"from {source_text}, with {facts.blocked_event_count} blocked and "
             "no allowed connection observed. This does not establish policy exposure, "
             "an application session, or compromise."
         )
 
-    base = (
-        f"The firewall permitted inbound traffic{service_text} "
-        f"({facts.destination_ports} port(s)) from {facts.primary_entity}"
+    original_destination_text = ", ".join(facts.original_destination_ips) or "unknown"
+    original_ports_text = (
+        ", ".join(str(port) for port in facts.original_destination_ports) or "unknown"
     )
-    if facts.nat_event_count:
-        base += " through a DNAT/NAT-translated destination"
+    base = (
+        f"The firewall permitted inbound traffic{service_text} from {source_text} "
+        f"to {original_destination_text} ({original_ports_text} port(s))"
+    )
+    if facts.effective_destination_ips and set(facts.effective_destination_ips) != set(
+        facts.original_destination_ips
+    ):
+        effective_destination_text = ", ".join(facts.effective_destination_ips)
+        effective_ports_text = (
+            ", ".join(str(port) for port in facts.effective_destination_ports) or "unknown"
+        )
+        base += (
+            f", translated to effective destination {effective_destination_text} "
+            f"({effective_ports_text} port(s))"
+        )
     base += ". The available record establishes policy exposure"
 
     if facts.transport_activity_observed:

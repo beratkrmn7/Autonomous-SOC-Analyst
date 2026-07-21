@@ -361,9 +361,17 @@ def evidence_validation_node(state: IncidentState) -> dict:
             "review_reason": ReviewReason.INVALID_LLM_OUTPUT.value
         }
     
+    from agent.triage.guardrails import classify_incident
+    classification = classify_incident(context, triage_input.signal_views)
+
     ev_results = validate_evidence(submission, triage_input, context)
-    accepted_claims, rejected_claims = validate_claims(submission.claims, ev_results)
-    
+    accepted_claims, rejected_claims = validate_claims(
+        submission.claims,
+        ev_results,
+        firewall_only_evidence=classification.is_firewall_only,
+    )
+
+
     # Check if needs_review fallback applies
     valid_ev = [e for e in ev_results if e.status == "validated"]
     verdict = submission.triage_verdict.value

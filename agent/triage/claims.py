@@ -16,7 +16,12 @@ HIGH_IMPACT_CLAIMS = {
     ClaimType.COMMAND_EXECUTION
 }
 
-def validate_claims(claims: List[TriageClaim], validated_evidence: List[EvidenceValidationResult]) -> Tuple[List[TriageClaim], List[dict]]:
+def validate_claims(
+    claims: List[TriageClaim],
+    validated_evidence: List[EvidenceValidationResult],
+    *,
+    firewall_only_evidence: bool = False,
+) -> Tuple[List[TriageClaim], List[dict]]:
     valid_ev_ids = {r.evidence_id for r in validated_evidence if r.status == "validated"}
     
     accepted_claims = []
@@ -65,7 +70,17 @@ def validate_claims(claims: List[TriageClaim], validated_evidence: List[Evidence
                 "reason": RejectionReason.UNSUPPORTED_CLAIM_TYPE.value
             })
             continue
-        
+
+        if firewall_only_evidence and claim.claim_type == ClaimType.OTHER:
+            # A free-text OTHER statement cannot be safely classified, so it
+            # must not become a back door for a compromise/success claim
+            # that firewall-only telemetry cannot support.
+            rejected_claims.append({
+                "claim_id": claim.claim_id,
+                "reason": RejectionReason.FIREWALL_ONLY_EVIDENCE_INSUFFICIENT.value
+            })
+            continue
+
         accepted_claims.append(claim)
         
     return accepted_claims, rejected_claims

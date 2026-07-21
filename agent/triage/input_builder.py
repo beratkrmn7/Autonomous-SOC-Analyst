@@ -1,4 +1,4 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from agent.triage.models import (
     TriageInput,
     SafeEventView,
@@ -12,6 +12,17 @@ from agent.triage.guardrails import derive_incident_facts
 from agent.triage.network_context import derive_flow_direction
 import hashlib
 
+# Phase 6E.3 bounds for the provider-facing safe view. These cap what a
+# single incident can ever push into the prompt regardless of how many raw
+# events/signals the deterministic engine matched; full, untruncated
+# event/signal IDs always remain in DetectionResult and persistence. The
+# current 36-rule registry never produces an incident anywhere near these
+# limits, so normal incidents are never truncated.
+MAX_SIGNAL_VIEWS = 50
+MAX_MATCHED_EVENT_IDS_PER_SIGNAL = 50
+MAX_MITRE_PER_SIGNAL = 20
+MAX_SHORT_FIELD_CHARS = 200
+
 def generate_evidence_id(incident_id: str, event_id: str, source: str, quote: str, reason: str) -> str:
     hash_input = f"{incident_id}|{event_id}|{source}|{quote}|{reason}"
     return hashlib.sha256(hash_input.encode('utf-8')).hexdigest()[:12]
@@ -22,6 +33,14 @@ def truncate_str(s: str, max_len: int = 500) -> str:
     if len(s) > max_len:
         return s[:max_len] + "... [TRUNCATED]"
     return s
+
+
+def _bounded_optional_str(value: Optional[str], max_len: int = MAX_SHORT_FIELD_CHARS) -> Optional[str]:
+    """Like truncate_str, but preserves None instead of coercing it to ''."""
+    if value is None:
+        return None
+    return truncate_str(value, max_len)
+
 
 def _build_safe_event(event: CanonicalLogEvent, max_preview_chars: int = 1000) -> SafeEventView:
     return SafeEventView(
@@ -44,11 +63,11 @@ def _build_safe_event(event: CanonicalLogEvent, max_preview_chars: int = 1000) -
         bytes=event.bytes,
         packets=event.packets,
         duration_ms=event.duration_ms,
-        inbound_interface=event.inbound_interface,
-        outbound_interface=event.outbound_interface,
-        inbound_zone=event.inbound_zone,
-        outbound_zone=event.outbound_zone,
-        nat_type=event.nat_type,
+        inbound_interface=_bounded_optional_str(event.inbound_interface),
+        outbound_interface=_bounded_optional_str(event.outbound_interface),
+        inbound_zone=_bounded_optional_str(event.inbound_zone),
+        outbound_zone=_bounded_optional_str(event.outbound_zone),
+        nat_type=_bounded_optional_str(event.nat_type),
         translated_src_ip=event.translated_src_ip,
         translated_dst_ip=event.translated_dst_ip,
         translated_src_port=event.translated_src_port,
@@ -63,7 +82,13 @@ def _build_signal_views(
 ) -> List[TriageSignalView]:
     """Bounded, deterministic, duplicate-free typed metadata for every
     attached signal (Phase 6E.2 may attach several rule families to one
-    correlated incident, including supporting/absorbed signals)."""
+    correlated incident, including supporting/absorbed signals).
+
+    Deterministic sorted truncation everywhere: matched_event_ids and
+    mitre_techniques are sorted (deduped) before being capped, and the
+    final view list is sorted by signal_id before being capped, so
+    truncation never depends on input order.
+    """
     views: dict[str, TriageSignalView] = {}
     for sig in detected_signals:
         signal_id = sig.get("signal_id")
@@ -75,20 +100,23 @@ def _build_signal_views(
                 for eid in sig.get("matched_event_ids", []) or []
                 if eid in incident_event_ids
             }
-        )
+        )[:MAX_MATCHED_EVENT_IDS_PER_SIGNAL]
         mitre = sig.get("mitre_techniques") or []
+        mitre_sorted = (
+            sorted(set(mitre))[:MAX_MITRE_PER_SIGNAL] if isinstance(mitre, list) else []
+        )
         views[signal_id] = TriageSignalView(
             signal_id=signal_id,
-            rule_id=sig.get("rule_id", "unknown"),
-            rule_name=sig.get("rule_name", "unknown"),
-            signal_type=sig.get("signal_type", "unknown"),
-            signal_family=sig.get("signal_family", "unknown"),
+            rule_id=truncate_str(str(sig.get("rule_id", "unknown")), MAX_SHORT_FIELD_CHARS),
+            rule_name=truncate_str(str(sig.get("rule_name", "unknown")), MAX_SHORT_FIELD_CHARS),
+            signal_type=truncate_str(str(sig.get("signal_type", "unknown")), MAX_SHORT_FIELD_CHARS),
+            signal_family=truncate_str(str(sig.get("signal_family", "unknown")), MAX_SHORT_FIELD_CHARS),
             severity=str(sig.get("severity", "none")),
             confidence=float(sig.get("confidence_score", 0.0) or 0.0),
             matched_event_ids=matched_event_ids,
-            mitre_techniques=sorted(set(mitre)) if isinstance(mitre, list) else [],
+            mitre_techniques=mitre_sorted,
         )
-    return sorted(views.values(), key=lambda view: view.signal_id)
+    return sorted(views.values(), key=lambda view: view.signal_id)[:MAX_SIGNAL_VIEWS]
 
 def build_triage_input(
     context: TriageIncidentContext,

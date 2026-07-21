@@ -35,6 +35,11 @@ class RejectionReason(str, Enum):
     INSUFFICIENT_STRUCTURED_FIELDS = "insufficient_structured_fields"
     EVIDENCE_REJECTED = "evidence_rejected"
     CLAIM_EVIDENCE_MISMATCH = "claim_evidence_mismatch"
+    # Phase 6E.3: a free-text ClaimType.OTHER statement cannot be safely
+    # classified, so it can never be accepted for a firewall-only
+    # exposure/policy/sequence incident (no application/EDR evidence source
+    # exists to support any success or compromise claim).
+    FIREWALL_ONLY_EVIDENCE_INSUFFICIENT = "firewall_only_evidence_insufficient"
 
 class ReviewReason(str, Enum):
     LLM_DISABLED = "llm_disabled"
