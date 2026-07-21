@@ -191,6 +191,68 @@ All 36 registered rules use only events supplied to the current
 `DetectionEngine.analyze()` call. Allowed access, exposure, or policy evidence is not
 proof of successful authentication, exploitation, compromise, or remote execution.
 
+## Phase 6E.2 Batch-Local Incident Correlation
+
+`agent/detection/incident_correlation.py` clusters cross-rule `DetectionSignal` objects
+produced by one `DetectionEngine.analyze()` call into a single `IncidentBundle` per
+cluster, using shared event evidence (never source IP, port, service name, or timing
+alone) as the correlation gate, and a fixed precedence order (`signal_precedence_key`)
+to choose which signal defines the merged incident's identity. This remains entirely
+batch-local: it has no knowledge of, and cannot merge across, separate ingestion jobs or
+files. Two adjacent files describing the same ongoing campaign each produce their own
+independent incident under Phase 6E.2 alone.
+
+## Phase 6E.4A Persistent Cross-Job Correlation Foundation
+
+Phase 6E.4A adds a database-backed *foundation* for recognizing that incidents from
+separate ingestion jobs belong to the same ongoing campaign, without changing anything
+about Phase 6E.2's batch-local behavior above.
+
+- **Disabled by default.** The entire feature is gated behind
+  `Settings.stateful_correlation_enabled` (default `False`). When disabled,
+  `StatefulIncidentCorrelationService.resolve_and_merge()` performs zero database writes
+  and returns immediately - it is not called anywhere in the production `AnalysisService`
+  pipeline yet.
+- **Deterministic profile matching, never source IP alone.** `agent/correlation/stateful.py`
+  derives a typed, bounded `StatefulCorrelationProfile` from an incident's own canonical
+  events (never raw PF strings, parser metadata, LLM output, or report text) using one of
+  three conservative strategies: source-service campaigns (e.g. repeated RDP probing from
+  one source), source-target sequences (e.g. `scan_followed_by_allowed_connection`), and
+  protected-service exposure (e.g. repeated inbound reach to one internal Redis instance,
+  where the *external* source is deliberately excluded from the profile because different
+  public sources reaching the same exposed service must still correlate). A same-source
+  incident with no compatible service/port/protocol identity produces no profile at all
+  (fails closed) rather than falling back to source IP alone.
+- **One canonical service identity.** The profile uses a single service-identity token,
+  preferring the emitted per-service probe identity (`ssh_probe`, `redis_probe`,
+  `mysql_probe`, `kubelet_probe`, ...), then a *specific* classified service, and only
+  falling back to the exact destination port. Ambiguous multi-service buckets (database,
+  kubernetes, docker) are never used as a token, so Redis and MySQL never collapse into
+  one generic database campaign, and the Kubernetes API stays distinct from the kubelet.
+  `subnet_sweep` is scoped to its normalized destination subnet, so the campaign continues
+  across new individual IPs in the same subnet but not across different subnets.
+- **Persistent state, not a cache.** `IncidentCorrelationState` (one row per deterministic
+  correlation key) tracks the currently active "generation" of a campaign: which incident
+  is canonical, and the time window in which a new batch incident may still merge into it.
+  `stateful_correlation_window_seconds` controls campaign continuity (compared against the
+  incident's own event timestamps, never ingestion time); `stateful_correlation_state_ttl_seconds`
+  is an unrelated, independent control over when a state row becomes eligible for cleanup.
+  A backward arrival older than the active campaign window is classified *stale* and leaves
+  the active state completely unchanged, while a distinctly later burst starts a new
+  generation.
+- **Pure merge mechanics.** `agent/correlation/merge.py` reuses the existing Phase 6E.2
+  precedence function and severity/confidence scoring helpers to merge an incoming batch
+  incident into the existing canonical incident, so a later, more specific signal can still
+  promote the canonical incident's identity across jobs exactly as it already does within
+  one batch. Because the incident row has no evidence column, bounded historical evidence is
+  reconstructed deterministically from persisted canonical events at merge time (safe
+  structured fields only), so earlier jobs' evidence never vanishes across cross-file merges.
+- **No LLM involvement.** Nothing in this foundation calls a provider, reuses a previous
+  report, or decides whether an incident needs retriage. Deciding when an updated incident
+  should skip or require a fresh LLM triage pass, and reusing prior reports, is explicitly
+  deferred to Phase 6E.4B - this PR only builds and tests the deterministic persistence
+  foundation that a future integration will consume.
+
 ## Determinism
 
 Incidents and signals use a deterministic hashing mechanism (`generate_signal_id`, `generate_incident_id`) based on entities, temporal bounds, and correlated events. This ensures that processing the exact same batch of logs repeatedly produces exactly the same incidents.

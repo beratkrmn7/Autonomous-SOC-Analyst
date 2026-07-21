@@ -13,6 +13,7 @@ from agent.application.retention import RetentionCutoffs, RetentionEntity
 from agent.persistence.orm_models import (
     AuditEvent,
     EvidenceItem,
+    IncidentCorrelationState,
     IncidentEvent,
     IncidentSignal,
     Report,
@@ -669,6 +670,14 @@ class RetentionCleanupRepository:
         self._session.execute(
             delete(ingestion_job_incidents).where(
                 ingestion_job_incidents.c.incident_id.in_(incident_ids)
+            )
+        )
+        # Phase 6E.4A: a correlation-state row is 1:1 metadata about which
+        # incident is the active canonical incident for a profile - it must
+        # never outlive the incident it points to.
+        self._session.execute(
+            delete(IncidentCorrelationState).where(
+                IncidentCorrelationState.incident_id.in_(incident_ids)
             )
         )
 

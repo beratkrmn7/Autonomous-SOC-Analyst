@@ -294,6 +294,20 @@ class Settings(BaseSettings):
     worker_heartbeat_interval_seconds: int = Field(default=15, ge=1)
     worker_heartbeat_stale_seconds: int = Field(default=60, ge=1)
 
+    # Phase 6E.4A: persistent cross-job correlation foundation (disabled by
+    # default). This settings block only controls the standalone foundation
+    # introduced in this phase - it is not read by AnalysisService yet.
+    stateful_correlation_enabled: bool = False
+    stateful_correlation_version: str = Field(
+        default="1", min_length=1, max_length=16, pattern=r"^[A-Za-z0-9._-]+$"
+    )
+    stateful_correlation_window_seconds: int = Field(default=3600, gt=0, le=2_592_000)
+    stateful_correlation_state_ttl_seconds: int = Field(
+        default=86400, ge=1, le=31_536_000
+    )
+    stateful_correlation_max_profile_items: int = Field(default=20, ge=1, le=100)
+    stateful_correlation_candidate_limit: int = Field(default=20, ge=1, le=100)
+
     @model_validator(mode="after")
     def validate_settings(self) -> "Settings":
         if not self.retention_archive_root.strip():
@@ -335,6 +349,12 @@ class Settings(BaseSettings):
         if self.max_request_body_bytes < self.max_upload_bytes:
             raise ValueError("request_body_limit_below_upload_limit")
         self.ingestion.MAX_UPLOAD_BYTES = self.max_upload_bytes
+
+        if (
+            self.stateful_correlation_state_ttl_seconds
+            < self.stateful_correlation_window_seconds
+        ):
+            raise ValueError("stateful_correlation_state_ttl_below_window")
 
         if self.api_docs_enabled is None:
             self.api_docs_enabled = self.app_env != "production"

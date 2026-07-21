@@ -617,6 +617,70 @@ class SearchProjectionState(Base):
     __mapper_args__ = {"version_id_col": version}
 
 
+class IncidentCorrelationState(Base):
+    """Phase 6E.4A: the currently active generation for one deterministic
+    stateful correlation profile (see agent/correlation/stateful.py).
+
+    One row per correlation_key. While active (expires_at in the future),
+    the row's incident_id is the canonical incident that new matching batch
+    incidents merge into. When expired, the same correlation_key may start
+    a new generation with a new canonical incident_id - prior generations
+    are never rewritten or deleted by that transition, only superseded.
+    """
+
+    __tablename__ = "incident_correlation_states"
+    __table_args__ = (
+        CheckConstraint(
+            "length(trim(correlation_version)) > 0",
+            name="ck_incident_correlation_states_correlation_version",
+        ),
+        CheckConstraint(
+            "length(trim(strategy)) > 0",
+            name="ck_incident_correlation_states_strategy",
+        ),
+        CheckConstraint(
+            "generation > 0", name="ck_incident_correlation_states_generation"
+        ),
+        CheckConstraint(
+            "version > 0", name="ck_incident_correlation_states_version"
+        ),
+        CheckConstraint(
+            "expires_at > last_seen",
+            name="ck_incident_correlation_states_expiry_after_last_seen",
+        ),
+        CheckConstraint(
+            "last_seen >= first_seen",
+            name="ck_incident_correlation_states_last_seen_after_first_seen",
+        ),
+        Index("ix_incident_correlation_states_incident_id", "incident_id"),
+        Index("ix_incident_correlation_states_expires_at", "expires_at"),
+        Index("ix_incident_correlation_states_last_seen", "last_seen"),
+        Index(
+            "ix_incident_correlation_states_strategy_last_seen",
+            "strategy",
+            "last_seen",
+        ),
+    )
+
+    correlation_key = Column(String(128), primary_key=True)
+    correlation_version = Column(String(16), nullable=False)
+    strategy = Column(String(64), nullable=False)
+    incident_id = Column(String, ForeignKey("incidents.incident_id"), nullable=False)
+    profile = Column(JSON, nullable=False)
+    generation = Column(Integer, nullable=False, default=1)
+    first_seen = Column(DateTime(timezone=True), nullable=False)
+    last_seen = Column(DateTime(timezone=True), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    version = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=func.now(),
+        onupdate=func.now(),
+    )
+
+
 class SearchIndexOutbox(Base):
     __tablename__ = "search_index_outbox"
     __table_args__ = (

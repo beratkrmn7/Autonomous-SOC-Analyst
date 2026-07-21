@@ -5,7 +5,7 @@ from agent.config import Settings, get_settings
 from agent.persistence.repositories import (
     ApiCredentialRepository, IncidentRepository, AuditEventRepository, IngestionJobRepository,
     CanonicalEventRepository, DetectionSignalRepository, TriageRunRepository,
-    EvidenceRepository, ReportRepository
+    EvidenceRepository, ReportRepository, IncidentCorrelationStateRepository
 )
 from agent.persistence.retention_repository import RetentionRepository
 from agent.persistence.archive_repository import (
@@ -41,6 +41,7 @@ class UnitOfWork:
         self.triage_runs = TriageRunRepository(self.session)
         self.evidence = EvidenceRepository(self.session)
         self.reports = ReportRepository(self.session)
+        self.correlation_state = IncidentCorrelationStateRepository(self.session)
         self.retention = RetentionRepository(self.session)
         self.archive_exports = ArchiveExportRepository(self.session, self.retention)
         self.archive_runs = RetentionArchiveRunRepository(self.session)

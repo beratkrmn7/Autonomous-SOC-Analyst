@@ -70,7 +70,13 @@ def _projection_values(**overrides: object) -> dict[str, object]:
 
 def test_projection_revision_is_the_only_head_and_follows_outbox() -> None:
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert script.get_heads() == [PROJECTION_REVISION]
+    # The migration tree must stay linear (exactly one head), matching the
+    # same invariant asserted in tests/retention/test_retention_migration.py.
+    # Later migrations (e.g. Phase 6E.4A's incident_correlation_states) now
+    # legitimately build on top of the projection revision, so the projection
+    # revision is no longer the tip itself - but the projection -> outbox ->
+    # previous chain below must remain intact and unbranched.
+    assert len(script.get_heads()) == 1
     projection_revision = script.get_revision(PROJECTION_REVISION)
     assert projection_revision is not None
     assert projection_revision.down_revision == OUTBOX_REVISION
