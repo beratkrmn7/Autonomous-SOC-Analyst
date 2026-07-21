@@ -40,27 +40,65 @@ class IncidentMergeOutcome:
     material_changes: tuple[str, ...]
 
 
+def _valid_sorted_unique(
+    evidence: Sequence[DetectionEvidence], incident_event_ids: set[str]
+) -> list[DetectionEvidence]:
+    seen: set[str] = set()
+    result: list[DetectionEvidence] = []
+    for item in sorted(evidence, key=lambda e: e.event_id):
+        if item.event_id not in incident_event_ids or item.event_id in seen:
+            continue
+        result.append(item)
+        seen.add(item.event_id)
+    return result
+
+
 def _merge_evidence(
     canonical_evidence: Sequence[DetectionEvidence],
     incoming_evidence: Sequence[DetectionEvidence],
     incident_event_ids: set[str],
 ) -> list[DetectionEvidence]:
-    # Sort by event_id first so the result never depends on which bundle's
-    # evidence happened to be listed first - deterministic regardless of
-    # merge direction or input order.
-    combined = sorted(
-        (*canonical_evidence, *incoming_evidence), key=lambda item: item.event_id
+    """Deterministic, duplicate-free, bounded evidence that never lets one
+    side starve the other.
+
+    A global event-ID sort can fill every MAX_INCIDENT_EVIDENCE slot with
+    historical (canonical) evidence and drop the incoming job entirely when
+    its event IDs happen to sort later. Instead: reserve one slot for the
+    earliest canonical item (when canonical evidence exists) and one slot
+    for the earliest incoming item (when incoming evidence exists), then
+    fill any remaining slots deterministically from the full sorted,
+    deduplicated pool.
+    """
+    canonical_valid = _valid_sorted_unique(canonical_evidence, incident_event_ids)
+    incoming_valid = _valid_sorted_unique(incoming_evidence, incident_event_ids)
+
+    selected: list[DetectionEvidence] = []
+    selected_ids: set[str] = set()
+
+    if canonical_valid and len(selected) < MAX_INCIDENT_EVIDENCE:
+        selected.append(canonical_valid[0])
+        selected_ids.add(canonical_valid[0].event_id)
+    if (
+        incoming_valid
+        and incoming_valid[0].event_id not in selected_ids
+        and len(selected) < MAX_INCIDENT_EVIDENCE
+    ):
+        selected.append(incoming_valid[0])
+        selected_ids.add(incoming_valid[0].event_id)
+
+    remaining_pool = sorted(
+        {item.event_id: item for item in (*canonical_valid, *incoming_valid)}.values(),
+        key=lambda e: e.event_id,
     )
-    evidence: list[DetectionEvidence] = []
-    seen: set[str] = set()
-    for item in combined:
-        if len(evidence) >= MAX_INCIDENT_EVIDENCE:
+    for item in remaining_pool:
+        if len(selected) >= MAX_INCIDENT_EVIDENCE:
             break
-        if item.event_id in seen or item.event_id not in incident_event_ids:
+        if item.event_id in selected_ids:
             continue
-        evidence.append(item)
-        seen.add(item.event_id)
-    return evidence
+        selected.append(item)
+        selected_ids.add(item.event_id)
+
+    return sorted(selected, key=lambda e: e.event_id)[:MAX_INCIDENT_EVIDENCE]
 
 
 def _select_anchor(

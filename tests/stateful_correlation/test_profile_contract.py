@@ -456,3 +456,58 @@ def test_subnet_sweep_different_subnets_produce_different_profiles() -> None:
     )
     assert sweep_a is not None and sweep_c is not None
     assert compute_correlation_key(sweep_a) != compute_correlation_key(sweep_c)
+
+
+# --- Blocker 1: distributed_scan role collision -----------------------------
+
+
+def test_distributed_scan_never_produces_a_stateful_profile() -> None:
+    # DistributedScanRule sets primary_entity=dst_ip (the protected
+    # destination) and target_entities to the distributed source IPs - the
+    # opposite orientation from every other source-service campaign type.
+    events = [
+        _event("d1", src_ip="198.51.100.1", dst_ip="10.0.0.5", dst_port=3389),
+        _event("d2", src_ip="198.51.100.2", dst_ip="10.0.0.5", dst_port=3389),
+    ]
+    profile = _profile(
+        events,
+        incident_type="distributed_scan",
+        incident_family="network_scanning",
+        primary_entity="10.0.0.5",
+        target_entities=["198.51.100.1", "198.51.100.2"],
+        event_ids=["d1", "d2"],
+    )
+    assert profile is None
+
+
+def test_horizontal_scan_and_distributed_scan_sharing_an_ip_do_not_collide() -> None:
+    # A horizontal scan sourced FROM 10.0.0.5 against RDP...
+    horizontal_events = [_event("h1", src_ip="10.0.0.5", dst_ip="192.168.1.1", dst_port=3389)]
+    horizontal_profile = _profile(
+        horizontal_events,
+        incident_type="horizontal_scan",
+        incident_family="network_scanning",
+        primary_entity="10.0.0.5",
+        target_entities=["192.168.1.1"],
+        event_ids=["h1"],
+    )
+    assert horizontal_profile is not None
+    horizontal_key = compute_correlation_key(horizontal_profile)
+
+    # ...must never share a correlation key with a distributed scan
+    # TARGETING 10.0.0.5:3389 (same IP, opposite role).
+    distributed_events = [
+        _event("dd1", src_ip="198.51.100.1", dst_ip="10.0.0.5", dst_port=3389),
+        _event("dd2", src_ip="198.51.100.2", dst_ip="10.0.0.5", dst_port=3389),
+    ]
+    distributed_profile = _profile(
+        distributed_events,
+        incident_type="distributed_scan",
+        incident_family="network_scanning",
+        primary_entity="10.0.0.5",
+        target_entities=["198.51.100.1", "198.51.100.2"],
+        event_ids=["dd1", "dd2"],
+    )
+    # Fails closed entirely, so there is no key at all to collide with.
+    assert distributed_profile is None
+    assert horizontal_key is not None

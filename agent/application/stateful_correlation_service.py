@@ -174,22 +174,61 @@ class StatefulIncidentMergeService:
         strategy: str,
         correlation_version: str,
         generation: int,
-    ) -> Incident:
+    ) -> tuple[Incident, bool]:
+        """Return the canonical Incident row for `bundle`, plus whether
+        anything material changed on it.
+
+        When an Incident with this exact deterministic incident_id already
+        exists (e.g. persisted earlier by plain batch-local persistence, or
+        by a previous stateful resolve), it is reused rather than
+        duplicated - but the full stateful metric set is still (re)stamped,
+        a new job association is still added, and `Incident.version` still
+        bumps exactly once for that change, rather than silently skipping
+        all of that bookkeeping the way an early return would.
+        """
+        primary_signal_id = str(
+            bundle.metrics.get("primary_signal_id")
+            or (bundle.signal_ids[0] if bundle.signal_ids else "")
+        )
+
         existing = uow.incidents.get_for_update(bundle.incident_id)
         if existing is not None:
-            if job not in existing.jobs:
+            job_newly_associated = job not in existing.jobs
+            if job_newly_associated:
                 existing.jobs.append(job)
-            return existing
+
+            prev_metrics = cast(dict, existing.metrics or {})
+            first_time_stateful = "stateful_correlation_key" not in prev_metrics
+            prev_generation = int(prev_metrics.get("stateful_generation", 0) or 0)
+            material_change = (
+                job_newly_associated
+                or first_time_stateful
+                or prev_metrics.get("stateful_correlation_key") != correlation_key
+                or prev_generation != generation
+            )
+
+            _apply_stateful_metrics(
+                existing,
+                correlation_key=correlation_key,
+                strategy=strategy,
+                correlation_version=correlation_version,
+                generation=generation,
+                merge_count=int(prev_metrics.get("stateful_merge_count", 0) or 0),
+                job_count=len(existing.jobs),
+                total_events=len(bundle.event_ids),
+                correlated_signal_count=len(bundle.signal_ids),
+                absorbed_signal_count=len(bundle.absorbed_signal_ids),
+                primary_signal_id=primary_signal_id,
+            )
+            if material_change:
+                existing.version = max(1, int(existing.version or 1)) + 1
+            return existing, material_change
 
         orm_incident = DataMapper.domain_incident_to_orm(bundle)
         uow.incidents.add(orm_incident)
         orm_incident.jobs.append(job)
         IncidentLifecycle.transition(orm_incident, "new", actor="stateful_correlation")
 
-        primary_signal_id = str(
-            bundle.metrics.get("primary_signal_id")
-            or (bundle.signal_ids[0] if bundle.signal_ids else "")
-        )
         _apply_stateful_metrics(
             orm_incident,
             correlation_key=correlation_key,
@@ -203,7 +242,7 @@ class StatefulIncidentMergeService:
             absorbed_signal_count=len(bundle.absorbed_signal_ids),
             primary_signal_id=primary_signal_id,
         )
-        return orm_incident
+        return orm_incident, True
 
     def merge_into_canonical(
         self,
@@ -366,22 +405,27 @@ class StatefulIncidentCorrelationService:
         state = uow.correlation_state.get_for_update(correlation_key)
 
         if state is None:
-            created = self._try_create(
-                uow,
-                incoming_bundle=incoming_bundle,
-                job=job,
-                profile=profile,
-                correlation_key=correlation_key,
-                ttl=ttl,
-                now=now,
-            )
-            if created is not None:
-                return created
-            # Lost the unique-correlation_key race: re-read the winner and
-            # fall through to the existing-state path to merge into it.
-            state = uow.correlation_state.get_for_update(correlation_key)
-            if state is None:
-                raise StatefulCorrelationError("stateful_correlation_state_race_unresolved")
+            try:
+                return self._try_create(
+                    uow,
+                    incoming_bundle=incoming_bundle,
+                    job=job,
+                    profile=profile,
+                    correlation_key=correlation_key,
+                    ttl=ttl,
+                    now=now,
+                )
+            except IntegrityError:
+                # Disambiguate by re-reading: if another worker's state row
+                # is now present, this really was the unique-correlation_key
+                # race - fall through and merge into the winner. If no state
+                # row exists, the failure was an unrelated FK/CHECK/unique
+                # violation (e.g. an incoming incident referencing a missing
+                # detection-signal row) and must propagate unchanged rather
+                # than being replaced with a generic race error.
+                state = uow.correlation_state.get_for_update(correlation_key)
+                if state is None:
+                    raise
 
         canonical_incident_row = uow.incidents.get_for_update(state.incident_id)
         decision = classify_state_decision(
@@ -445,18 +489,26 @@ class StatefulIncidentCorrelationService:
         correlation_key: str,
         ttl: timedelta,
         now: datetime,
-    ) -> Optional[StatefulResolveResult]:
+    ) -> StatefulResolveResult:
         """Create the canonical incident and its state row inside a single
         savepoint so the FK (state.incident_id -> incidents.incident_id) is
-        satisfied at flush time. Returns None (rolling back both rows) when
-        the unique correlation_key was won by a concurrent writer - leaving
-        no orphan duplicate incident behind."""
+        satisfied at flush time.
+
+        Raises `IntegrityError` (never swallowed here) on ANY constraint
+        violation - the unique-correlation_key race, an unrelated FK
+        violation (e.g. a missing detection-signal row), or a CHECK
+        violation. The caller disambiguates by re-reading the correlation
+        state afterward: only when it finds a winner's state row does it
+        treat this as the known race and merge into it; otherwise it
+        re-raises the original error unchanged. Either way, the savepoint
+        rollback leaves no orphan duplicate incident behind.
+        """
         session = uow.session
         assert session is not None
         canonical_row: Optional[Incident] = None
         try:
             with session.begin_nested():
-                canonical_row = self._merge_service.create_canonical(
+                canonical_row, _ = self._merge_service.create_canonical(
                     uow,
                     bundle=incoming_bundle,
                     job=job,
@@ -469,7 +521,7 @@ class StatefulIncidentCorrelationService:
                 # so the state row's incident_id FK is satisfiable - there is
                 # no ORM relationship between the two tables, so SQLAlchemy
                 # cannot infer the insert order on its own. Both writes stay
-                # inside this savepoint, so the unique-key loser rolls back the
+                # inside this savepoint, so any failure rolls back the
                 # incident as well and leaves no orphan.
                 session.flush()
                 new_state = IncidentCorrelationState(
@@ -492,7 +544,7 @@ class StatefulIncidentCorrelationService:
             # be re-inserted on the outer commit, leaving no orphan duplicate.
             if canonical_row is not None and canonical_row in session:
                 session.expunge(canonical_row)
-            return None
+            raise
 
         return self._result(
             "created",
@@ -600,8 +652,28 @@ class StatefulIncidentCorrelationService:
         session = uow.session
         assert session is not None
 
+        active_canonical_row = uow.incidents.get_for_update(state.incident_id)
+        if (
+            active_canonical_row is not None
+            and incoming_bundle.incident_id == str(state.incident_id)
+        ):
+            # The incoming batch is deterministically identical to the
+            # incident the (expired/out-of-window) active state still
+            # points at - nothing new actually happened. Fabricating
+            # generation+1 while reusing this exact same incident_id would
+            # be misleading, so leave the generation/state pointer untouched
+            # and report a no-op instead of a fake new generation.
+            return self._result(
+                "no_op",
+                incoming_bundle,
+                canonical_incident=active_canonical_row,
+                canonical_incident_id=str(active_canonical_row.incident_id),
+                correlation_key=correlation_key,
+                generation=int(state.generation),
+            )
+
         new_generation = int(state.generation) + 1
-        canonical_row = self._merge_service.create_canonical(
+        canonical_row, _ = self._merge_service.create_canonical(
             uow,
             bundle=incoming_bundle,
             job=job,

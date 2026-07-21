@@ -18,11 +18,13 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from sqlalchemy import create_engine, event
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from agent.application.stateful_correlation_service import StatefulIncidentCorrelationService
 from agent.config import Settings
-from agent.persistence.orm_models import Base, Incident, IncidentCorrelationState
+from agent.persistence.mappers import DataMapper
+from agent.persistence.orm_models import Base, Incident, IncidentCorrelationState, IngestionJob
 from agent.persistence.unit_of_work import UnitOfWork
 
 from tests.stateful_correlation.conftest import (
@@ -158,3 +160,83 @@ def test_concurrent_first_writers_are_fk_safe_and_leave_no_orphan(fk_session_fac
         assert set(signal_ids) == {"SIG-0", "SIG-1"}
         # Both jobs ended up associated with the single canonical incident.
         assert {str(j.id) for j in incident_row.jobs} == {"job-0", "job-1"}
+
+
+# --- Blocker 2: only the real unique-correlation-key race is swallowed -----
+
+
+def test_missing_detection_signal_row_propagates_real_integrity_error(
+    fk_session_factory,
+) -> None:
+    """An incoming incident referencing a signal_id that was never persisted
+    must raise the real FK IntegrityError, not be silently reinterpreted as
+    the unique-correlation_key race - and must leave no orphan incident or
+    correlation-state row behind."""
+    settings = Settings(stateful_correlation_enabled=True)
+    service = StatefulIncidentCorrelationService()
+
+    events = [make_event("a1")]
+    signal = make_signal("SIG-MISSING", ["a1"])
+    incident = make_incident("INC-A", signal, events)
+
+    with UnitOfWork(session_factory=fk_session_factory, settings=settings) as uow:
+        job = IngestionJob(id="job-a", status="completed")
+        uow.ingestion_jobs.add(job)
+        # Persist the event, but deliberately never persist SIG-MISSING as a
+        # DetectionSignal row, so incident_signals.signal_id has no row to
+        # reference under PRAGMA foreign_keys=ON.
+        uow.canonical_events.add(DataMapper.domain_event_to_orm(events[0]))
+        uow.session.flush()
+
+        orm_signal = DataMapper.domain_signal_to_orm(signal)
+        # A detached, never-added DetectionSignal row: passed to
+        # resolve_and_merge only so it can build incoming_signal_rows, but
+        # never persisted via uow.detection_signals.add(...).
+
+        with pytest.raises(IntegrityError):
+            service.resolve_and_merge(
+                uow,
+                incoming_bundle=incident,
+                incoming_events=events,
+                incoming_signal_rows=[orm_signal],
+                job=job,
+                settings=settings,
+                now=FIXED,
+            )
+        uow.session.rollback()
+
+    with UnitOfWork(session_factory=fk_session_factory, settings=settings) as uow:
+        assert uow.session.query(IncidentCorrelationState).count() == 0
+        assert uow.session.query(Incident).count() == 0
+
+
+def test_concurrent_unique_key_race_still_swallowed_after_disambiguation_fix(
+    fk_session_factory,
+) -> None:
+    """The known-good concurrent race path (two legitimate first writers on
+    the same profile) must remain green after tightening the IntegrityError
+    handling to disambiguate real errors from the race."""
+    settings = Settings(stateful_correlation_enabled=True)
+    service = StatefulIncidentCorrelationService()
+
+    events_a = [make_event("ra1")]
+    signal_a = make_signal("SIG-RA", ["ra1"])
+    incident_a = make_incident("INC-RA", signal_a, events_a)
+    with UnitOfWork(session_factory=fk_session_factory, settings=settings) as uow:
+        result_a, _ = submit_job(
+            uow, service, settings,
+            job_id="job-ra", events=events_a, signal=signal_a, incident=incident_a, now=FIXED,
+        )
+    assert result_a.status == "created"
+
+    later = FIXED + datetime.timedelta(minutes=1)
+    events_b = [make_event("rb1", ts=later)]
+    signal_b = make_signal("SIG-RB", ["rb1"], ts=later)
+    incident_b = make_incident("INC-RB", signal_b, events_b, ts=later)
+    with UnitOfWork(session_factory=fk_session_factory, settings=settings) as uow:
+        result_b, _ = submit_job(
+            uow, service, settings,
+            job_id="job-rb", events=events_b, signal=signal_b, incident=incident_b, now=later,
+        )
+    assert result_b.status == "merged"
+    assert result_b.canonical_incident_id == result_a.canonical_incident_id

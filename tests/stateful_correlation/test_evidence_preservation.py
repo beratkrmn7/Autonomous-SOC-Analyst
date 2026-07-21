@@ -118,3 +118,56 @@ def test_reconstruction_is_deterministic_across_repeated_calls(session_factory) 
             {"src_ip", "dst_ip", "src_port", "dst_port", "protocol", "action"}
         )
         assert item.reason == "persisted_incident_evidence"
+
+
+# --- Blocker 3: stratified evidence selection at the bound ------------------
+
+
+def test_evidence_bound_preserves_both_historical_and_incoming_when_ids_sort_apart() -> None:
+    """More than MAX_INCIDENT_EVIDENCE historical events, all sorting before
+    every incoming event ID, must not starve the incoming job out of the
+    bounded evidence entirely."""
+    from agent.correlation.merge import _merge_evidence
+    from agent.detection.models import DetectionEvidence
+
+    def evidence(event_id: str) -> DetectionEvidence:
+        return DetectionEvidence(
+            event_id=event_id, quote="q", reason="r", source="s",
+            original_fields={}, correlation_context={},
+        )
+
+    canonical_evidence = [evidence(f"a{i:03d}") for i in range(MAX_INCIDENT_EVIDENCE + 5)]
+    incoming_evidence = [evidence("z001")]
+    incident_event_ids = {e.event_id for e in canonical_evidence} | {
+        e.event_id for e in incoming_evidence
+    }
+
+    result = _merge_evidence(canonical_evidence, incoming_evidence, incident_event_ids)
+
+    assert len(result) <= MAX_INCIDENT_EVIDENCE
+    result_ids = [item.event_id for item in result]
+    assert len(result_ids) == len(set(result_ids))
+    assert any(eid.startswith("a") for eid in result_ids), "historical evidence vanished"
+    assert "z001" in result_ids, "incoming job evidence starved out"
+
+
+def test_evidence_bound_is_deterministic_regardless_of_call_repetition() -> None:
+    from agent.correlation.merge import _merge_evidence
+    from agent.detection.models import DetectionEvidence
+
+    def evidence(event_id: str) -> DetectionEvidence:
+        return DetectionEvidence(
+            event_id=event_id, quote="q", reason="r", source="s",
+            original_fields={}, correlation_context={},
+        )
+
+    canonical_evidence = [evidence(f"a{i:03d}") for i in range(MAX_INCIDENT_EVIDENCE + 5)]
+    incoming_evidence = [evidence("z001"), evidence("z002")]
+    incident_event_ids = {e.event_id for e in canonical_evidence} | {
+        e.event_id for e in incoming_evidence
+    }
+
+    first = _merge_evidence(canonical_evidence, incoming_evidence, incident_event_ids)
+    second = _merge_evidence(list(reversed(canonical_evidence)), incoming_evidence, incident_event_ids)
+
+    assert [item.event_id for item in first] == [item.event_id for item in second]

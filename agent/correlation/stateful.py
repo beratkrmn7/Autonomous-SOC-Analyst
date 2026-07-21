@@ -59,7 +59,14 @@ _SOURCE_SERVICE_BROAD_TYPES = frozenset(
     {
         "horizontal_scan",
         "low_and_slow_horizontal_scan",
-        "distributed_scan",
+        # distributed_scan is intentionally excluded: DistributedScanRule
+        # sets primary_entity=dst_ip (the protected destination) and
+        # target_entities to the distributed source IPs - the opposite
+        # orientation from every other type in this set. Treating its
+        # primary_entity as actor_entity would let a distributed-scan
+        # incident collide with an unrelated horizontal scan where the same
+        # IP is genuinely the source. No stateful profile is derived for it
+        # in this phase (fails closed) rather than adding a new strategy.
         "multi_service_sweep",
         "repeated_blocked_scanner",
         "rdp_probe",
