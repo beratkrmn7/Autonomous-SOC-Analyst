@@ -189,6 +189,64 @@ def time_windows_are_compatible(
     return gap_seconds <= window_seconds
 
 
+# Exposure/policy rules intentionally use different entity viewpoints for
+# the same underlying firewall event (for example the external source for
+# critical_management_service_exposed vs. the effective internal
+# destination for dnat_sensitive_service_exposure and
+# wan_to_lan_sensitive_service_allowed). Exact primary_entity equality stays
+# the default correlation rule; this is the only, narrow exception to it.
+_CROSS_PRIMARY_ELIGIBLE_FAMILIES = frozenset({"firewall_exposure", "firewall_policy"})
+
+
+def _has_shared_event_evidence(left: DetectionSignal, right: DetectionSignal) -> bool:
+    return bool(set(left.event_ids) & set(right.event_ids))
+
+
+def _entity_scope(signal: DetectionSignal) -> set[str]:
+    scope = set(signal.target_entities)
+    if signal.primary_entity:
+        scope.add(signal.primary_entity)
+    return scope
+
+
+def _entity_scopes_are_compatible(left: DetectionSignal, right: DetectionSignal) -> bool:
+    return bool(_entity_scope(left) & _entity_scope(right))
+
+
+def _cross_primary_exposure_correlation_allowed(
+    anchor: DetectionSignal,
+    candidate: DetectionSignal,
+    *,
+    window_seconds: int,
+) -> bool:
+    """Narrow exception for exposure/policy signals with different primary
+    entities but the same underlying event evidence.
+
+    Requires: both signals in firewall_exposure/firewall_policy, both
+    event-ID sets non-empty and *exactly* equal (never a partial/subset
+    overlap - that would risk merging a broad multi-source signal into an
+    unrelated source-specific incident), compatible entity scopes
+    (primary_entity plus target_entities share at least one entity), and a
+    compatible time window.
+    """
+    if anchor.signal_family not in _CROSS_PRIMARY_ELIGIBLE_FAMILIES:
+        return False
+    if candidate.signal_family not in _CROSS_PRIMARY_ELIGIBLE_FAMILIES:
+        return False
+
+    anchor_event_ids = set(anchor.event_ids)
+    candidate_event_ids = set(candidate.event_ids)
+    if not anchor_event_ids or not candidate_event_ids:
+        return False
+    if anchor_event_ids != candidate_event_ids:
+        return False
+
+    if not _entity_scopes_are_compatible(anchor, candidate):
+        return False
+
+    return time_windows_are_compatible(anchor, candidate, window_seconds)
+
+
 def _signals_may_correlate(
     anchor: DetectionSignal,
     candidate: DetectionSignal,
@@ -196,13 +254,23 @@ def _signals_may_correlate(
     window_seconds: int,
     overlap_threshold: float,
 ) -> bool:
-    if not anchor.primary_entity or not candidate.primary_entity:
-        return False
-    if anchor.primary_entity != candidate.primary_entity:
-        return False
-    if not time_windows_are_compatible(anchor, candidate, window_seconds):
-        return False
-    return event_overlap_ratio(anchor, candidate) >= overlap_threshold
+    if anchor.primary_entity and candidate.primary_entity and (
+        anchor.primary_entity == candidate.primary_entity
+    ):
+        if not time_windows_are_compatible(anchor, candidate, window_seconds):
+            return False
+        # Require genuine shared-event evidence before comparing against the
+        # configured ratio, so an overlap_threshold of 0.0 still means "any
+        # positive shared-event overlap", not "no overlap required at all" -
+        # empty and disjoint event sets never correlate regardless of
+        # threshold.
+        if not _has_shared_event_evidence(anchor, candidate):
+            return False
+        return event_overlap_ratio(anchor, candidate) >= overlap_threshold
+
+    return _cross_primary_exposure_correlation_allowed(
+        anchor, candidate, window_seconds=window_seconds
+    )
 
 
 def _best_anchor(

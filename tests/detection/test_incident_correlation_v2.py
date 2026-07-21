@@ -20,6 +20,11 @@ from agent.detection.config import DetectionSettings
 from agent.detection.detectors import register_default_rules
 from agent.detection.detectors.coordinated_scan import RepeatedBlockedScannerRule
 from agent.detection.detectors.horizontal_scan import HorizontalScanRule
+from agent.detection.detectors.inbound_exposure import (
+    CriticalManagementServiceExposedRule,
+    DnatSensitiveServiceExposureRule,
+    WanToLanSensitiveServiceAllowedRule,
+)
 from agent.detection.detectors.remote_service_probe import RemoteServiceProbeRule
 from agent.detection.engine import DetectionEngine
 from agent.detection.incident_correlation import (
@@ -682,3 +687,170 @@ def test_settings_reject_invalid_correlation_values() -> None:
         DetectionSettings.model_validate({"INCIDENT_EVENT_OVERLAP_THRESHOLD": -0.1})
     with pytest.raises(ValidationError):
         DetectionSettings.model_validate({"MAX_CONTEXT_EVENTS_PER_INCIDENT": 0})
+
+
+# ---------------------------------------------------------------------------
+# Merge-blocker fix 1: narrow cross-primary correlation for real exposure
+# rules that view the same firewall event from different entity angles.
+# ---------------------------------------------------------------------------
+
+
+def _exposure_settings(**overrides: object) -> DetectionSettings:
+    values: dict[str, object] = {
+        "INBOUND_EXPOSURE_WINDOW_SECONDS": 300,
+        "CRITICAL_MANAGEMENT_EXPOSURE_MIN_EVENTS": 1,
+        # Only one sanitized PF event is used for this scenario.
+        "WAN_TO_LAN_MIN_ALLOWED_EVENTS": 1,
+    }
+    values.update(overrides)
+    return DetectionSettings.model_validate(values)
+
+
+def test_real_exposure_rules_correlate_across_different_primary_entities() -> None:
+    # One sanitized PF event: an external source reaches a DNAT'd, WAN->LAN
+    # allowed connection to Redis (a critical management port), sufficient
+    # to independently qualify for all three exposure/policy rules, each of
+    # which uses a different entity as its own primary_entity.
+    event = build_event(
+        "exposure-1",
+        timestamp=FIXED_TIME,
+        src_ip="8.8.8.8",
+        dst_ip="203.0.113.50",
+        dst_port=6379,
+        protocol="TCP",
+        action="allow",
+        tcp_flags="SYN,ACK",
+        inbound_zone="wan",
+        outbound_zone="lan",
+        translated_dst_ip="10.0.0.60",
+        nat_type="dnat",
+        parser_name="pf_firewall",
+    )
+
+    registry = RuleRegistry()
+    registry.register(CriticalManagementServiceExposedRule())
+    registry.register(DnatSensitiveServiceExposureRule())
+    registry.register(WanToLanSensitiveServiceAllowedRule())
+
+    result = DetectionEngine(registry=registry, settings=_exposure_settings()).analyze(
+        [event]
+    )
+
+    assert {signal.rule_id for signal in result.signals} == {
+        "critical_management_service_exposed",
+        "dnat_sensitive_service_exposure",
+        "wan_to_lan_sensitive_service_allowed",
+    }
+    # The real rule outputs use different primary_entity values (external
+    # source for critical, effective internal destination for the other
+    # two) - confirming this is not a manually-crafted same-entity fixture.
+    primary_entities = {signal.primary_entity for signal in result.signals}
+    assert len(primary_entities) == 2
+    assert "8.8.8.8" in primary_entities
+    assert "10.0.0.60" in primary_entities
+
+    assert len(result.incidents) == 1
+    incident = result.incidents[0]
+    assert incident.incident_type == "critical_management_service_exposed"
+    assert set(incident.signal_ids) == {s.signal_id for s in result.signals}
+    assert incident.primary_entity == "8.8.8.8"
+
+
+def test_exposure_signals_with_disjoint_events_do_not_cross_primary_correlate() -> None:
+    # Two independent DNAT exposures to different internal destinations.
+    # Same family, same window, but no shared event evidence at all - the
+    # narrow cross-primary exception must not fire.
+    event_a = build_event(
+        "exposure-a",
+        timestamp=FIXED_TIME,
+        src_ip="8.8.8.8",
+        dst_ip="203.0.113.50",
+        dst_port=6379,
+        protocol="TCP",
+        action="allow",
+        tcp_flags="SYN,ACK",
+        inbound_zone="wan",
+        outbound_zone="lan",
+        translated_dst_ip="10.0.0.60",
+        nat_type="dnat",
+        parser_name="pf_firewall",
+    )
+    event_b = build_event(
+        "exposure-b",
+        timestamp=FIXED_TIME,
+        src_ip="9.9.9.9",
+        dst_ip="203.0.113.51",
+        dst_port=6379,
+        protocol="TCP",
+        action="allow",
+        tcp_flags="SYN,ACK",
+        inbound_zone="wan",
+        outbound_zone="lan",
+        translated_dst_ip="10.0.0.61",
+        nat_type="dnat",
+        parser_name="pf_firewall",
+    )
+
+    registry = RuleRegistry()
+    registry.register(CriticalManagementServiceExposedRule())
+    registry.register(DnatSensitiveServiceExposureRule())
+
+    result = DetectionEngine(registry=registry, settings=_exposure_settings()).analyze(
+        [event_a, event_b]
+    )
+
+    assert len(result.signals) == 4
+    assert len(result.incidents) == 2
+
+
+# ---------------------------------------------------------------------------
+# Merge-blocker fix 2: real shared-event evidence required even at
+# overlap_threshold 0.0.
+# ---------------------------------------------------------------------------
+
+
+def test_threshold_zero_disjoint_event_sets_stay_separate() -> None:
+    a = _signal(
+        "sig-a", "rdp_probe", "rdp_probe", "service_probing", ["e1", "e2"]
+    )
+    b = _signal(
+        "sig-b",
+        "network_scan_horizontal",
+        "horizontal_scan",
+        "network_scanning",
+        ["e3", "e4"],
+    )
+    clusters = cluster_signals([a, b], window_seconds=300, overlap_threshold=0.0)
+    assert len(clusters) == 2
+
+
+def test_threshold_zero_empty_event_set_stays_separate() -> None:
+    a = _signal("sig-a", "rdp_probe", "rdp_probe", "service_probing", [])
+    b = _signal(
+        "sig-b",
+        "network_scan_horizontal",
+        "horizontal_scan",
+        "network_scanning",
+        ["e1", "e2"],
+    )
+    clusters = cluster_signals([a, b], window_seconds=300, overlap_threshold=0.0)
+    assert len(clusters) == 2
+
+
+def test_threshold_zero_one_shared_event_may_correlate() -> None:
+    a = _signal(
+        "sig-a", "rdp_probe", "rdp_probe", "service_probing", ["e1", "e2", "e3"]
+    )
+    b = _signal(
+        "sig-b",
+        "network_scan_horizontal",
+        "horizontal_scan",
+        "network_scanning",
+        ["e3", "e4", "e5", "e6", "e7", "e8", "e9", "e10"],
+    )
+    assert event_overlap_ratio(a, b) == pytest.approx(1 / 3)
+
+    clusters = cluster_signals([a, b], window_seconds=300, overlap_threshold=0.0)
+
+    assert len(clusters) == 1
+    assert {s.signal_id for s in clusters[0]} == {"sig-a", "sig-b"}
