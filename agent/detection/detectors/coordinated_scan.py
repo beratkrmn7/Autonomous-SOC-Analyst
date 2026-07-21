@@ -9,6 +9,8 @@ from agent.detection.detectors.scan_helpers import (
     bounded_sorted_values,
     event_ratios,
     is_blocked,
+    is_spi_anomaly_event,
+    is_tcp_initial_connection_probe,
     normalized_protocol,
     parse_ip_address,
 )
@@ -21,7 +23,7 @@ from agent.schema import CanonicalLogEvent
 class RepeatedBlockedScannerRule(BaseDetectionRule):
     metadata = DetectionRuleMetadata(
         rule_id="repeated_blocked_scanner",
-        version="1.0.0",
+        version="1.1.0",
         name="Repeated Blocked Scanner",
         family="network_scanning",
         priority=110,
@@ -40,17 +42,25 @@ class RepeatedBlockedScannerRule(BaseDetectionRule):
         context: DetectionContext,
     ) -> list[DetectionSignal]:
         settings = context.settings
-        groups: dict[str, list[CanonicalLogEvent]] = defaultdict(list)
+        groups: dict[tuple[str, str], list[CanonicalLogEvent]] = defaultdict(list)
         for event in events:
-            if (
+            if not (
                 event.src_ip
                 and parse_ip_address(event.src_ip) is not None
                 and (event.dst_ip is None or parse_ip_address(event.dst_ip) is not None)
             ):
-                groups[event.src_ip].append(event)
+                continue
+            if is_spi_anomaly_event(
+                event, fallback_raw_match=settings.SPI_ANOMALY_FALLBACK_RAW_MATCH
+            ):
+                continue
+            protocol = normalized_protocol(event)
+            if protocol == "TCP" and not is_tcp_initial_connection_probe(event):
+                continue
+            groups[(event.src_ip, protocol)].append(event)
 
         signals: list[DetectionSignal] = []
-        for src_ip, grouped_events in groups.items():
+        for (src_ip, protocol), grouped_events in groups.items():
             if len(grouped_events) < settings.REPEATED_BLOCKED_SCANNER_MIN_EVENTS:
                 continue
 
@@ -101,7 +111,7 @@ class RepeatedBlockedScannerRule(BaseDetectionRule):
                     self.rule_id,
                     self.version,
                     src_ip,
-                    "blocked_scanner",
+                    f"blocked_scanner_{protocol}",
                     first_seen,
                     event_ids,
                 )

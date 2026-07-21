@@ -19,16 +19,118 @@ from agent.application.models import AnalysisResult
 from agent.ingestion.pipeline import IngestionPipeline
 from agent.ingestion.models import CanonicalLogEvent
 from agent.filtering import EventFilter
+from agent.detection.config import DetectionSettings
 from agent.detection.engine import DetectionEngine
+from agent.detection.models import IncidentBundle
 from agent.models import IncidentState
 from agent.graph import app
 from agent.triage.models import TriageIncidentContext
+from agent.triage.routing import (
+    DETERMINISTIC_TRIAGE_VERDICT,
+    DigestMember,
+    RoutingDecision,
+    build_digest,
+    decide_route,
+    generate_deterministic_report,
+)
 from agent.application.cancellation import (
     JobCancellationChecker,
     JobCancellationRequested,
 )
 from sqlalchemy.sql import func
 logger = logging.getLogger(__name__)
+
+
+def _annotate_routing(state: IncidentState, decision: RoutingDecision, detection_confidence: float) -> None:
+    state["triage_route"] = decision.route
+    state["routing_reason"] = decision.reason
+    state["triage_origin"] = decision.triage_origin
+    state["llm_invoked"] = decision.llm_invoked
+    state["detection_confidence"] = detection_confidence
+
+
+def _stash_routing_in_incident_metrics(inc: IncidentBundle, decision: RoutingDecision) -> None:
+    """Persist the routing decision in the existing Incident.metrics JSON column.
+
+    This lets an idempotent hydration RESTORE the exact original route
+    instead of recomputing it from hydrated canonical events, which do not
+    round-trip every raw field (for example TCP flags and parser metadata)
+    needed to safely re-derive a store_only SPI classification. No schema
+    change is required since Incident.metrics already exists.
+    """
+    inc.metrics = {
+        **inc.metrics,
+        "triage_route": decision.route,
+        "routing_reason": decision.reason,
+        "triage_origin": decision.triage_origin,
+        "llm_invoked": decision.llm_invoked,
+    }
+
+
+def _restore_or_recompute_route(
+    inc: IncidentBundle,
+    event_map: Dict[str, CanonicalLogEvent],
+    signal_map: Dict[str, Any],
+    settings: DetectionSettings,
+) -> tuple[RoutingDecision, List[CanonicalLogEvent]]:
+    """Restore a previously persisted routing decision, or recompute it.
+
+    Used only when hydrating an idempotent completed result. Jobs persisted
+    after this stash was introduced carry an exact, lossless record of the
+    original decision in Incident.metrics; older rows without it fall back
+    to a best-effort recompute from the reconstructed incident/events.
+    """
+    incident_events = [event_map[eid] for eid in inc.event_ids if eid in event_map]
+    stored_route = inc.metrics.get("triage_route")
+    if stored_route in (
+        "individual_triage",
+        "deterministic_report",
+        "digest",
+        "store_only",
+    ):
+        decision = RoutingDecision(
+            route=cast(Any, stored_route),
+            reason=str(inc.metrics.get("routing_reason", "")),
+            triage_origin=cast(Any, inc.metrics.get("triage_origin", "deterministic")),
+            llm_invoked=bool(inc.metrics.get("llm_invoked", False)),
+        )
+        return decision, incident_events
+
+    decision, incident_events = _route_incident(inc, event_map, signal_map, settings)
+    return decision, incident_events
+
+
+def _route_incident(
+    inc: IncidentBundle,
+    event_map: Dict[str, CanonicalLogEvent],
+    signal_map: Dict[str, Any],
+    settings: DetectionSettings,
+) -> tuple[RoutingDecision, List[CanonicalLogEvent]]:
+    """Compute a routing decision the same way for fresh and hydrated incidents."""
+    incident_events = [event_map[eid] for eid in inc.event_ids if eid in event_map]
+    incident_context_events = [
+        event_map[eid] for eid in inc.context_event_ids if eid in event_map
+    ]
+    rule_ids = frozenset(
+        signal_map[sid].rule_id for sid in inc.signal_ids if sid in signal_map
+    )
+    decision = decide_route(
+        inc, incident_events, incident_context_events, rule_ids, settings
+    )
+    return decision, incident_events
+
+
+def _new_routing_metrics() -> Dict[str, int]:
+    return {
+        "total_incidents": 0,
+        "individual_triage_count": 0,
+        "deterministic_report_count": 0,
+        "digest_incident_count": 0,
+        "store_only_count": 0,
+        "digest_count": 0,
+        "provider_invocation_count": 0,
+    }
+
 
 class AnalysisService:
     def __init__(
@@ -155,37 +257,68 @@ class AnalysisService:
                     incident_id = inc_state.get("incident_id")
                     if not incident_id:
                         continue
-                        
+
                     triage_incident = persisted_incident_by_id.get(str(incident_id))
                     if triage_incident:
+                        # digest/store_only never called a provider and never
+                        # produced an individual report: keep the incident and
+                        # its signals persisted (already done above) without a
+                        # fabricated triage run, empty report, or a lifecycle
+                        # transition implying an agent reviewed it.
+                        route = inc_state.get("triage_route", "individual_triage")
+                        if route in ("digest", "store_only"):
+                            continue
+
+                        llm_invoked = bool(inc_state.get("llm_invoked", True))
                         verdict = inc_state.get("triage_verdict")
-                        new_status = "triaged" if verdict else "needs_review"
+                        if llm_invoked:
+                            new_status = "triaged" if verdict else "needs_review"
+                            run = TriageRun(
+                                triage_run_id=str(uuid.uuid4()),
+                                job_id=job.id,
+                                incident_id=incident_id,
+                                verdict=verdict,
+                                severity=inc_state.get("severity"),
+                                confidence_score=inc_state.get("confidence_score"),
+                                incident_type=inc_state.get("incident_type"),
+                                iteration_count=inc_state.get("iteration_count", 0),
+                                status="completed" if verdict else "failed"
+                            )
+                        else:
+                            # deterministic_report: honestly represented with
+                            # zero provider iterations, using the preserved
+                            # deterministic incident type/severity/confidence.
+                            # The persisted verdict is the valid label
+                            # "suspicious_activity", never the route name.
+                            new_status = "triaged"
+                            verdict = verdict or DETERMINISTIC_TRIAGE_VERDICT
+                            run = TriageRun(
+                                triage_run_id=str(uuid.uuid4()),
+                                job_id=job.id,
+                                incident_id=incident_id,
+                                verdict=verdict,
+                                severity=inc_state.get("severity"),
+                                confidence_score=inc_state.get("confidence_score"),
+                                incident_type=inc_state.get("incident_type"),
+                                iteration_count=0,
+                                provider="deterministic",
+                                status="completed",
+                            )
+
                         IncidentLifecycle.transition(
                             triage_incident,
-                            new_status, 
-                            actor_type="triage_agent", 
-                            actor_id="system", 
-                            details={"verdict": verdict}
-                        )
-                        
-                        run = TriageRun(
-                            triage_run_id=str(uuid.uuid4()),
-                            job_id=job.id,
-                            incident_id=incident_id,
-                            verdict=verdict,
-                            severity=inc_state.get("severity"),
-                            confidence_score=inc_state.get("confidence_score"),
-                            incident_type=inc_state.get("incident_type"),
-                            iteration_count=inc_state.get("iteration_count", 0),
-                            status="completed" if verdict else "failed"
+                            new_status,
+                            actor_type="triage_agent" if llm_invoked else "deterministic_triage",
+                            actor_id="system",
+                            details={"verdict": verdict, "route": route}
                         )
                         uow.triage_runs.add(run)
                         uow.session.flush()
-                        
+
                         # Process Evidence from safe_triage_input which has full candidate records
                         triage_input = inc_state.get("safe_triage_input", {})
                         candidates = triage_input.get("candidate_evidence", [])
-                        
+
                         valid_map = {e["evidence_id"]: e for e in inc_state.get("validated_evidence", [])}
                         reject_map = {e["evidence_id"]: e for e in inc_state.get("rejected_evidence", [])}
                         
@@ -340,15 +473,55 @@ class AnalysisService:
                             domain_sig = DataMapper.orm_to_domain_signal(sig)
                             result.detection_result.signals.append(domain_sig)
                             result.signal_map[domain_sig.signal_id] = domain_sig
-                            
+
                         # Reconstruct Incidents
+                        routing_metrics = _new_routing_metrics()
+                        digest_groups: Dict[str, List[DigestMember]] = {}
                         for inc in job.incidents:
                             domain_inc = DataMapper.orm_to_domain_incident(inc)
                             result.detection_result.incidents.append(domain_inc)
-                            
+
                             # Use the same exact builder logic to hydrate state
                             state = self._build_initial_state(domain_inc, result.event_map, result.signal_map)
-                            
+
+                            # Restore the exact original routing decision from
+                            # Incident.metrics when available (always true for
+                            # jobs persisted after this stash was introduced);
+                            # only recompute as a best-effort fallback for
+                            # older rows, since hydrated canonical events do
+                            # not round-trip every raw field a fresh
+                            # recomputation would need.
+                            decision, incident_events = _restore_or_recompute_route(
+                                domain_inc,
+                                result.event_map,
+                                result.signal_map,
+                                self.detection_engine.settings,
+                            )
+                            _annotate_routing(state, decision, domain_inc.confidence)
+                            state["incident_type"] = domain_inc.incident_type
+                            state["severity"] = domain_inc.severity
+                            state["confidence_score"] = domain_inc.confidence
+
+                            routing_metrics["total_incidents"] += 1
+                            if decision.route == "individual_triage":
+                                routing_metrics["individual_triage_count"] += 1
+                                routing_metrics["provider_invocation_count"] += 1
+                            elif decision.route == "deterministic_report":
+                                routing_metrics["deterministic_report_count"] += 1
+                            elif decision.route == "digest":
+                                routing_metrics["digest_incident_count"] += 1
+                                digest_groups.setdefault(domain_inc.incident_type, []).append(
+                                    DigestMember(
+                                        incident_id=domain_inc.incident_id,
+                                        primary_entity=domain_inc.primary_entity,
+                                        events=incident_events,
+                                        first_seen=domain_inc.first_seen,
+                                        last_seen=domain_inc.last_seen,
+                                    )
+                                )
+                            else:
+                                routing_metrics["store_only_count"] += 1
+
                             triage_runs = [tr for tr in job.triage_runs if tr.incident_id == inc.incident_id]
                             if triage_runs:
                                 last_run = sorted(triage_runs, key=lambda r: r.started_at, reverse=True)[0]
@@ -391,7 +564,14 @@ class AnalysisService:
                                             state["candidate_evidence"].append(ev_dict)
                                     
                             result.incidents.append(state)
-                            
+
+                        result.triage_digests = [
+                            build_digest(incident_type, members)
+                            for incident_type, members in sorted(digest_groups.items())
+                        ]
+                        routing_metrics["digest_count"] = len(result.triage_digests)
+                        result.routing_metrics = routing_metrics
+
                         return result
                 else:
                     # Create placeholder processing job
@@ -473,28 +653,80 @@ class AnalysisService:
         # If we have a Unit Of Work, we can persist the canonical events, signals, and incidents here.
         # This will be done after triage, to ensure a single transaction.
         
-        # 5. Graph Invocation (Triage)
+        # 5. Deterministic routing and graph invocation (Triage)
+        routing_metrics = _new_routing_metrics()
+        digest_groups: Dict[str, List[DigestMember]] = {}
+
         for inc in det_result.incidents:
             initial_state = self._build_initial_state(inc, event_map, signal_map)
             if job_id and self.cancellation_checker:
                 initial_state["cancellation_check"] = partial(
                     self._raise_if_cancelled, job_id
                 )
-            
-            if run_triage:
+
+            if not run_triage:
+                result.incidents.append(initial_state)
+                continue
+
+            routing_metrics["total_incidents"] += 1
+            decision, incident_events = _route_incident(
+                inc, event_map, signal_map, self.detection_engine.settings
+            )
+            _stash_routing_in_incident_metrics(inc, decision)
+
+            _annotate_routing(initial_state, decision, inc.confidence)
+
+            if decision.route == "individual_triage":
+                routing_metrics["individual_triage_count"] += 1
+                routing_metrics["provider_invocation_count"] += 1
                 try:
                     self._raise_if_cancelled(job_id)
-                    final_state = app.invoke(initial_state)
+                    final_state = cast(IncidentState, app.invoke(initial_state))
                     self._raise_if_cancelled(job_id)
-                    result.incidents.append(final_state)  # type: ignore
+                    _annotate_routing(final_state, decision, inc.confidence)
+                    result.incidents.append(final_state)
                 except JobCancellationRequested:
                     raise
                 except Exception as e:
                     logger.error("Error during triage", exc_info=False, extra={"error": type(e).__name__, "error_msg": str(e), "incident_id": initial_state.get("incident_id")})
                     result.incidents.append(initial_state)
+                continue
+
+            # Deterministic-origin routes below never call a provider.
+            initial_state["incident_type"] = inc.incident_type
+            initial_state["severity"] = inc.severity
+            initial_state["confidence_score"] = inc.confidence
+
+            if decision.route == "deterministic_report":
+                routing_metrics["deterministic_report_count"] += 1
+                initial_state["final_report"] = generate_deterministic_report(
+                    inc, incident_events
+                )
+                initial_state["triage_verdict"] = DETERMINISTIC_TRIAGE_VERDICT
+                initial_state["iteration_count"] = 0
+            elif decision.route == "digest":
+                routing_metrics["digest_incident_count"] += 1
+                digest_groups.setdefault(inc.incident_type, []).append(
+                    DigestMember(
+                        incident_id=inc.incident_id,
+                        primary_entity=inc.primary_entity,
+                        events=incident_events,
+                        first_seen=inc.first_seen,
+                        last_seen=inc.last_seen,
+                    )
+                )
             else:
-                result.incidents.append(initial_state)
-                
+                routing_metrics["store_only_count"] += 1
+
+            result.incidents.append(initial_state)
+
+        result.triage_digests = [
+            build_digest(incident_type, members)
+            for incident_type, members in sorted(digest_groups.items())
+        ]
+        routing_metrics["digest_count"] = len(result.triage_digests)
+        result.routing_metrics = routing_metrics
+
         # 6. Persistence
         if self.uow:
             try:

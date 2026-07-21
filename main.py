@@ -6,32 +6,72 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 
 from agent.ingestion.pipeline import IngestionPipeline
+from agent.models import IncidentState
 
 console = Console()
 
 # Duplicated logic removed. We now use AnalysisService.
 
+def _print_routing_summary(result) -> None:
+    metrics = result.routing_metrics
+    if not metrics:
+        return
+    console.print("\n[bold cyan]--- TRIAGE ROUTING SUMMARY ---[/bold cyan]")
+    console.print(f"Individual triage: {metrics.get('individual_triage_count', 0)}")
+    console.print(f"Deterministic reports: {metrics.get('deterministic_report_count', 0)}")
+    console.print(f"Added to digest: {metrics.get('digest_incident_count', 0)}")
+    console.print(f"Stored only: {metrics.get('store_only_count', 0)}")
+    console.print(f"Provider calls: {metrics.get('provider_invocation_count', 0)}")
+
+    for digest in result.triage_digests:
+        console.print(
+            f"\n[bold]Digest ({digest.get('incident_type')}):[/bold] "
+            f"{digest.get('incident_count', 0)} incidents, "
+            f"{digest.get('source_count', 0)} sources, "
+            f"{digest.get('total_blocked_events', 0)} blocked events, "
+            f"{digest.get('distinct_target_count', 0)} distinct targets"
+        )
+        console.print(f"  Common ports: {digest.get('common_ports', [])}")
+        console.print(f"  Sources: {digest.get('sources', [])}")
+        console.print(f"  {digest.get('statement', '')}")
+
+
+def _print_incident_state(inc_state: IncidentState) -> None:
+    console.print(f"\n[bold cyan]--- FINAL STATE ({inc_state.get('incident_id', 'unknown')}) ---[/bold cyan]")
+    route = inc_state.get('triage_route', 'individual_triage')
+    console.print(f"[bold]Route:[/bold] {route}")
+    console.print(f"[bold]Verdict:[/bold] {inc_state.get('triage_verdict')}")
+    console.print(f"[bold]Incident Type:[/bold] {inc_state.get('incident_type')}")
+    console.print(f"[bold]Severity:[/bold] {inc_state.get('severity')}")
+    console.print(f"[bold]Iterations:[/bold] {inc_state.get('iteration_count')}")
+    detection_confidence = inc_state.get('detection_confidence')
+    if detection_confidence is not None:
+        console.print(f"[bold]Detection confidence score:[/bold] {detection_confidence:.2f}")
+
+    if inc_state.get('final_report'):
+        console.print("\n")
+        console.print(Panel(Markdown(inc_state['final_report']), title="[bold green]GENERATED REPORT[/bold green]", border_style="green"))
+    elif route == "digest":
+        console.print("\n[yellow](Routed to digest; see routing summary)[/yellow]")
+    elif route == "store_only":
+        console.print("\n[yellow](Stored only; no report generated)[/yellow]")
+    else:
+        console.print("\n[yellow](No report generated)[/yellow]")
+
+    print("\n" + "="*50 + "\n")
+
+
 def analyze_file(file_path: str):
     console.print(f"[bold blue]Starting File Analysis: {file_path}[/bold blue]")
     from agent.application.analysis_service import AnalysisService
-    
+
     svc = AnalysisService()
     result = svc.analyze_file(file_path, run_triage=True, source_name="cli")
-    
+
     for inc_state in result.incidents:
-        console.print(f"\n[bold cyan]--- FINAL STATE ({inc_state.get('incident_id', 'unknown')}) ---[/bold cyan]")
-        console.print(f"[bold]Verdict:[/bold] {inc_state.get('triage_verdict')}")
-        console.print(f"[bold]Incident Type:[/bold] {inc_state.get('incident_type')}")
-        console.print(f"[bold]Severity:[/bold] {inc_state.get('severity')}")
-        console.print(f"[bold]Iterations:[/bold] {inc_state.get('iteration_count')}")
-        
-        if inc_state.get('final_report'):
-            console.print("\n")
-            console.print(Panel(Markdown(inc_state['final_report']), title="[bold green]GENERATED REPORT[/bold green]", border_style="green"))
-        else:
-            console.print("\n[yellow](No report generated)[/yellow]")
-            
-        print("\n" + "="*50 + "\n")
+        _print_incident_state(inc_state)
+
+    _print_routing_summary(result)
 
 def run_mock_test():
     run_all = os.environ.get("RUN_ALL", "false").lower() == "true"
@@ -62,27 +102,17 @@ def run_mock_test():
         # Convert mock logs to canonical format and state
         from agent.application.analysis_service import AnalysisService
         from agent.ingestion.pipeline import IngestionPipeline
-        from rich.panel import Panel
-        from rich.markdown import Markdown
-        
+
         c_events = IngestionPipeline().ingest_records(raw_logs, source_name="mock_incidents").events
         
         svc = AnalysisService()
         result = svc.analyze_events(c_events, run_triage=True)
-        
+
         for inc_state in result.incidents:
-            console.print(f"\n[bold cyan]--- FINAL STATE ({inc_state.get('incident_id', 'unknown')}) ---[/bold cyan]")
-            console.print(f"[bold]Verdict:[/bold] {inc_state.get('triage_verdict')}")
-            console.print(f"[bold]Incident Type:[/bold] {inc_state.get('incident_type')}")
-            console.print(f"[bold]Severity:[/bold] {inc_state.get('severity')}")
-            console.print(f"[bold]Iterations:[/bold] {inc_state.get('iteration_count')}")
-            
-            if inc_state.get('final_report'):
-                console.print("\n")
-                console.print(Panel(Markdown(inc_state['final_report']), title="[bold green]GENERATED REPORT[/bold green]", border_style="green"))
-            else:
-                console.print("\n[yellow](No report generated)[/yellow]")
-            
+            _print_incident_state(inc_state)
+
+        _print_routing_summary(result)
+
         if not run_all:
             print("\n[INFO] Breaking early after 1 incident. Set RUN_ALL=true in .env to run all.")
             break

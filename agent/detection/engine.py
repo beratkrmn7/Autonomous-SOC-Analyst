@@ -5,6 +5,7 @@ import logging
 from collections import defaultdict
 
 from agent.schema import CanonicalLogEvent
+from agent.detection.context_matching import events_are_bidirectionally_related
 from agent.detection.models import (
     DetectionSignal, IncidentBundle, DetectionResult, DetectionMetrics,
     generate_incident_id
@@ -163,7 +164,7 @@ class DetectionEngine:
         metrics.duplicate_signal_count = len(active_signals) - len(deduped_signals)
 
         # 5. Incident Correlation and Merging
-        incidents = self._correlate_incidents(deduped_signals, context_events or [])
+        incidents = self._correlate_incidents(deduped_signals, context_events or [], eligible_events)
         metrics.incident_count = len(incidents)
         
         # Determine uncorrelated events
@@ -263,10 +264,22 @@ class DetectionEngine:
             
         return final_signals
 
-    def _correlate_incidents(self, signals: List[DetectionSignal], context_events: List[CanonicalLogEvent]) -> List[IncidentBundle]:
+    def _correlate_incidents(
+        self,
+        signals: List[DetectionSignal],
+        context_events: List[CanonicalLogEvent],
+        candidate_events: List[CanonicalLogEvent],
+    ) -> List[IncidentBundle]:
         if not signals:
             return []
-            
+
+        event_lookup = {e.event_id: e for e in candidate_events if e.event_id}
+        # Deterministic scan order regardless of caller-supplied context ordering.
+        sorted_context_events = sorted(
+            (ce for ce in context_events if ce.event_id),
+            key=lambda ce: (ce.timestamp.isoformat() if ce.timestamp else "", ce.event_id),
+        )
+
         # Group by primary entity and time window
         groups = defaultdict(list)
         for s in signals:
@@ -308,23 +321,33 @@ class DetectionEngine:
             # Find context events (up to MAX_CONTEXT_EVENTS_PER_INCIDENT)
             context_ids: List[str] = []
             seen_context_ids: Set[str] = set()
-            if context_events:
-                # Basic context matching: same source IP, close in time, and not
-                # already incident evidence. The explicit set also protects
-                # against duplicate context input without expanding the bound.
+            incident_events = [
+                event_lookup[eid] for eid in sorted_event_ids if eid in event_lookup
+            ]
+            if sorted_context_events and incident_events:
+                # Bidirectional, NAT-aware matching: forward or reverse
+                # source/destination relationship (including translated IPs),
+                # matching/reversed/translated ports or a compatible service,
+                # and close in time. A single shared IP is never sufficient.
                 start_window = first_seen.timestamp() - self.settings.INCIDENT_MERGE_WINDOW_SECONDS
                 end_window = last_seen.timestamp() + self.settings.INCIDENT_MERGE_WINDOW_SECONDS
-                
-                for ce in context_events:
+
+                for ce in sorted_context_events:
                     if len(context_ids) >= self.settings.MAX_CONTEXT_EVENTS_PER_INCIDENT:
                         break
                     if ce.event_id in all_event_ids or ce.event_id in seen_context_ids:
                         continue
-                    if ce.src_ip == entity and ce.timestamp:
-                        ts = ce.timestamp.timestamp()
-                        if start_window <= ts <= end_window:
-                            context_ids.append(ce.event_id)
-                            seen_context_ids.add(ce.event_id)
+                    if not ce.timestamp:
+                        continue
+                    ts = ce.timestamp.timestamp()
+                    if not (start_window <= ts <= end_window):
+                        continue
+                    if any(
+                        events_are_bidirectionally_related(reference, ce)
+                        for reference in incident_events
+                    ):
+                        context_ids.append(ce.event_id)
+                        seen_context_ids.add(ce.event_id)
             
             incident_type = sigs[0].signal_type if len(set(s.signal_type for s in sigs)) == 1 else f"multiple_{family}"
             merge_key = f"{family}_{bucket}"

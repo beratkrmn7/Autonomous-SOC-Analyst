@@ -133,3 +133,11 @@ class IncidentState(TypedDict, total=False):
     final_report: NotRequired[str]
     detection_engine_executed: NotRequired[bool]
     cancellation_check: NotRequired[Callable[[], None]]
+
+    # Phase 6E.1: deterministic triage routing metadata, set for every
+    # incident when triage is enabled, regardless of which route it took.
+    triage_route: NotRequired[str]
+    routing_reason: NotRequired[str]
+    triage_origin: NotRequired[str]
+    llm_invoked: NotRequired[bool]
+    detection_confidence: NotRequired[float]

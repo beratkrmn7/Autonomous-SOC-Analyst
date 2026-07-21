@@ -1,11 +1,19 @@
 # mypy: ignore-errors
 from agent.persistence.orm_models import (
-    CanonicalEvent, DetectionSignal, Incident, 
+    CanonicalEvent, DetectionSignal, Incident,
     IncidentEvent, IncidentSignal
 )
 from agent.ingestion.models import CanonicalLogEvent
 from agent.detection.models import DetectionSignal as DomainDetectionSignal
 from agent.detection.models import IncidentBundle
+
+# Reserved internal key: DetectionSignal has no dedicated primary_entity
+# column (no migration), so the real source/attacker entity is smuggled
+# through the existing metrics JSON column and stripped back out on
+# hydration so it never leaks into the public metrics.
+_PRIMARY_ENTITY_METRICS_KEY = "_primary_entity"
+_UNKNOWN_PRIMARY_ENTITY = "unknown"
+
 
 class DataMapper:
     @staticmethod
@@ -53,6 +61,10 @@ class DataMapper:
 
     @staticmethod
     def domain_signal_to_orm(signal: DomainDetectionSignal) -> DetectionSignal:
+        metrics_with_primary_entity = {
+            **signal.metrics,
+            _PRIMARY_ENTITY_METRICS_KEY: signal.primary_entity,
+        }
         return DetectionSignal(
             signal_id=signal.signal_id,
             rule_id=signal.rule_id,
@@ -66,7 +78,7 @@ class DataMapper:
             last_seen=getattr(signal, 'last_seen', None),
             suppressed=getattr(signal, 'suppressed', False),
             suppression_reason=getattr(signal, 'suppression_reason', None),
-            metrics=signal.metrics,
+            metrics=metrics_with_primary_entity,
             mitre_techniques=signal.mitre_techniques,
             target_entities=signal.target_entities,
             event_ids=signal.event_ids
@@ -74,6 +86,15 @@ class DataMapper:
 
     @staticmethod
     def orm_to_domain_signal(orm_signal: DetectionSignal) -> DomainDetectionSignal:
+        # Copy so popping the reserved key never mutates the ORM-tracked dict.
+        public_metrics = dict(orm_signal.metrics or {})
+        primary_entity = public_metrics.pop(_PRIMARY_ENTITY_METRICS_KEY, None)
+        if not isinstance(primary_entity, str) or not primary_entity:
+            # Old rows persisted before this key existed. Never fall back to
+            # a target entity here - that would reverse source/attacker and
+            # target/victim.
+            primary_entity = _UNKNOWN_PRIMARY_ENTITY
+
         return DomainDetectionSignal( # type: ignore
             signal_id=orm_signal.signal_id,
             rule_id=orm_signal.rule_id,
@@ -88,9 +109,16 @@ class DataMapper:
             suppressed=orm_signal.suppressed,
             suppression_reason=orm_signal.suppression_reason,
             event_ids=orm_signal.event_ids,
+            primary_entity=primary_entity,
             target_entities=orm_signal.target_entities,
-            metrics=orm_signal.metrics,
-            mitre_techniques=orm_signal.mitre_techniques
+            metrics=public_metrics,
+            # Not persisted on the signal row (no dedicated columns without a
+            # migration); reconstructed empty, the same "not persisted
+            # separately" convention already used by
+            # orm_to_domain_incident's evidence=[].
+            evidence=[],
+            mitre_techniques=orm_signal.mitre_techniques,
+            tags=[],
         )
 
     @staticmethod

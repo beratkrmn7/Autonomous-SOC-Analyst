@@ -42,7 +42,7 @@ def test_incident_context_is_unique_bounded_and_excludes_incident_events() -> No
             event_id=f"context-{index}",
             timestamp=now,
             src_ip="192.0.2.44",
-            dst_ip="203.0.113.20",
+            dst_ip="198.51.100.20",
             action="pass",
             parser_name="pf_firewall",
             parse_status="parsed",

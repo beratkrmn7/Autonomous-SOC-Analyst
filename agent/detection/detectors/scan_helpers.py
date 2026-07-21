@@ -83,6 +83,18 @@ def is_tcp_syn(event: CanonicalLogEvent) -> bool:
     return "SYN" in tokens and "ACK" not in tokens
 
 
+def is_tcp_initial_connection_probe(event: CanonicalLogEvent) -> bool:
+    """True only for a structural initial TCP connection probe (bare SYN-style).
+
+    Excludes response-side traffic (ACK, ACK+RST, FIN+ACK, SYN+RST, SYN+ACK),
+    missing flags, and explicit NULL flags.
+    """
+    if normalized_protocol(event) != "TCP":
+        return False
+    tokens = event_tcp_flag_tokens(event)
+    return "SYN" in tokens and not (tokens & {"ACK", "RST", "FIN"})
+
+
 def is_spi_anomaly_event(
     event: CanonicalLogEvent,
     *,

@@ -1,21 +1,27 @@
-from typing import List, Dict, Optional
-from pydantic import BaseModel, ConfigDict
+from typing import Any, List, Dict, Optional
+from pydantic import BaseModel, ConfigDict, Field
 from agent.models import IncidentState
 from agent.ingestion.models import CanonicalLogEvent, IngestionResult
 from agent.detection.models import DetectionResult, DetectionSignal
 
 class AnalysisResult(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
-    
+
     source_name: Optional[str] = None
     ingestion_result: Optional[IngestionResult] = None
     detection_result: Optional[DetectionResult] = None
     incidents: List[IncidentState] = []
-    
+
     # Maps of domain entities
     event_map: Dict[str, CanonicalLogEvent] = {}
     signal_map: Dict[str, DetectionSignal] = {}
-    
+
+    # Phase 6E.1: deterministic triage routing outputs. Digests batch
+    # low-value incidents that were never sent to a provider; routing_metrics
+    # summarizes how incidents were routed and how many provider calls ran.
+    triage_digests: List[Dict[str, Any]] = Field(default_factory=list)
+    routing_metrics: Dict[str, Any] = Field(default_factory=dict)
+
     # Idempotency fields
     job_id: Optional[str] = None
     reused: bool = False
