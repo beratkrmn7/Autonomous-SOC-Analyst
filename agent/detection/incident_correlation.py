@@ -15,7 +15,7 @@ signals and events. Nothing calls a provider or mutates its inputs.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 
 from agent.detection.config import DetectionSettings
@@ -35,6 +35,7 @@ from agent.schema import CanonicalLogEvent
 
 
 MAX_INCIDENT_EVIDENCE = 10
+_ASSET_PRIMARY_FAMILIES = frozenset({"firewall_exposure", "firewall_policy"})
 
 # Level 1: a sequence that progressed from blocks/scanning to an allowed
 # connection. Highest priority - this is the strongest evidence available.
@@ -424,12 +425,14 @@ def build_correlated_incident(
     )
     confidence = calculate_incident_confidence(list(cluster))
 
+    primary_entity = incident_primary_entity(anchor, event_lookup)
+    title_source = incident_title_source(anchor, event_lookup)
     bucket = int(anchor.first_seen.timestamp()) // settings.INCIDENT_MERGE_WINDOW_SECONDS
     merge_key = f"v2:{anchor.rule_id}:{anchor.signal_id}:{bucket}"
     incident_id = generate_incident_id(
         anchor.signal_family,
         anchor.signal_type,
-        anchor.primary_entity,
+        primary_entity,
         merge_key,
         anchor.first_seen,
     )
@@ -452,12 +455,12 @@ def build_correlated_incident(
         incident_id=incident_id,
         incident_type=anchor.signal_type,
         incident_family=anchor.signal_family,
-        title=f"Detected {anchor.rule_name} from {anchor.primary_entity}",
+        title=f"Detected {anchor.rule_name} from {title_source}",
         severity=severity,
         confidence=confidence,
         first_seen=first_seen,
         last_seen=last_seen,
-        primary_entity=anchor.primary_entity,
+        primary_entity=primary_entity,
         target_entities=sorted(target_entities),
         signal_ids=signal_ids,
         event_ids=event_ids,
@@ -520,6 +523,50 @@ def _overlapping_incidents_are_mergeable(
         and _incident_windows_overlap_or_touch(left, right)
         and _incident_event_sets_overlap(left, right)
     )
+
+
+def incident_title_source(
+    signal: DetectionSignal,
+    event_lookup: Mapping[str, CanonicalLogEvent] | None = None,
+) -> str:
+    """Return a deterministic observed source for an incident title."""
+    if event_lookup:
+        source_ips = sorted(
+            {
+                event.src_ip
+                for event_id in signal.event_ids
+                if (event := event_lookup.get(event_id)) is not None and event.src_ip
+            }
+        )
+        if source_ips:
+            return source_ips[0]
+    source_metrics = str(
+        signal.metrics.get("source_ips") or signal.metrics.get("source_ip") or ""
+    )
+    metric_sources = sorted(
+        {value.strip() for value in source_metrics.split(",") if value.strip()}
+    )
+    if metric_sources:
+        return metric_sources[0]
+    return signal.primary_entity
+
+
+def incident_primary_entity(
+    signal: DetectionSignal,
+    event_lookup: Mapping[str, CanonicalLogEvent] | None = None,
+) -> str:
+    """Normalize incident ownership without changing the producing signal."""
+    if signal.signal_family not in _ASSET_PRIMARY_FAMILIES or not event_lookup:
+        return signal.primary_entity
+    destinations = sorted(
+        {
+            destination
+            for event_id in signal.event_ids
+            if (event := event_lookup.get(event_id)) is not None
+            if (destination := (event.translated_dst_ip or event.dst_ip))
+        }
+    )
+    return destinations[0] if destinations else signal.primary_entity
 
 
 def _incident_keeper_key(

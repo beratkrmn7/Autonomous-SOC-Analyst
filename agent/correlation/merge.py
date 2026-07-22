@@ -16,6 +16,7 @@ from typing import Optional, Sequence
 from agent.detection.config import DetectionSettings
 from agent.detection.incident_correlation import (
     MAX_INCIDENT_EVIDENCE,
+    incident_title_source,
     signal_precedence_key,
 )
 from agent.detection.models import DetectionEvidence, DetectionSignal, IncidentBundle
@@ -177,16 +178,22 @@ def merge_incident_bundles(
     severity_facts = None
     if anchor is not None:
         primary_signal_id = anchor.signal_id
+        normalized_primary_entity = anchor.primary_entity
+        if anchor.signal_family in {"firewall_exposure", "firewall_policy"}:
+            source_bundle = (
+                incoming if anchor.signal_id in incoming.signal_ids else canonical
+            )
+            normalized_primary_entity = source_bundle.primary_entity
         if (
             anchor.signal_type != canonical.incident_type
             or anchor.signal_family != canonical.incident_family
-            or anchor.primary_entity != canonical.primary_entity
+            or normalized_primary_entity != canonical.primary_entity
         ):
             identity_promoted = True
         incident_type = anchor.signal_type
         incident_family = anchor.signal_family
-        title = f"Detected {anchor.rule_name} from {anchor.primary_entity}"
-        primary_entity = anchor.primary_entity
+        title = f"Detected {anchor.rule_name} from {incident_title_source(anchor)}"
+        primary_entity = normalized_primary_entity
 
         cluster = [
             signal

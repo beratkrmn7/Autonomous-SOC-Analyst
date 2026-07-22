@@ -126,6 +126,14 @@ def _build_signal(
     evidence: list[DetectionEvidence] | None = None,
 ) -> DetectionSignal:
     events = [item.event for item in exposure_events]
+    metrics = {
+        **metrics,
+        "source_ips": ",".join(
+            bounded_sorted_values(
+                item.source_ip for item in exposure_events
+            )
+        ),
+    }
     event_ids = [event.event_id for event in events]
     first_seen = events[0].timestamp or context.analysis_started_at
     last_seen = events[-1].timestamp or context.analysis_started_at

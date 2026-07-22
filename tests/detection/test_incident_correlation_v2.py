@@ -741,9 +741,8 @@ def test_real_exposure_rules_correlate_across_different_primary_entities() -> No
         "dnat_sensitive_service_exposure",
         "wan_to_lan_sensitive_service_allowed",
     }
-    # The real rule outputs use different primary_entity values (external
-    # source for critical, effective internal destination for the other
-    # two) - confirming this is not a manually-crafted same-entity fixture.
+    # Producing signals retain their rule-level entity semantics; the final
+    # IncidentBundle normalizes exposure ownership to the effective asset.
     primary_entities = {signal.primary_entity for signal in result.signals}
     assert len(primary_entities) == 2
     assert "8.8.8.8" in primary_entities
@@ -753,7 +752,8 @@ def test_real_exposure_rules_correlate_across_different_primary_entities() -> No
     incident = result.incidents[0]
     assert incident.incident_type == "critical_management_service_exposed"
     assert set(incident.signal_ids) == {s.signal_id for s in result.signals}
-    assert incident.primary_entity == "8.8.8.8"
+    assert incident.primary_entity == "10.0.0.60"
+    assert incident.title == "Detected Critical Management Service Exposed from 8.8.8.8"
 
 
 def test_exposure_signals_with_disjoint_events_do_not_cross_primary_correlate() -> None:
