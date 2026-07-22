@@ -61,7 +61,7 @@ def _print_incident_state(inc_state: IncidentState) -> None:
     print("\n" + "="*50 + "\n")
 
 
-def _run_persistent_analysis(file_path: str, *, run_triage: bool, analysis_mode: str, source_name: str):
+def _run_persistent_analysis(file_path: str, *, run_triage: bool, analysis_mode: str, source_name: str, isolated: bool = False):
     """Run detect/analyze through the persistent AnalysisService so jobs,
     events, signals, incidents (and, in analyze mode, triage/report outputs)
     are persisted and optional stateful cross-job correlation applies. Computes
@@ -77,7 +77,13 @@ def _run_persistent_analysis(file_path: str, *, run_triage: bool, analysis_mode:
     settings = get_settings()
     pipeline_version = settings.pipeline_version
     file_sha256 = compute_file_sha256(file_path)
-    idempotency_key = compute_idempotency_key(file_sha256, pipeline_version, analysis_mode)
+    correlation_mode = "isolated" if isolated else "configured"
+    idempotency_key = compute_idempotency_key(
+        file_sha256,
+        pipeline_version,
+        analysis_mode,
+        correlation_mode,
+    )
     svc = build_persistent_analysis_service(settings)
     return svc.analyze_file(
         file_path,
@@ -87,14 +93,19 @@ def _run_persistent_analysis(file_path: str, *, run_triage: bool, analysis_mode:
         idempotency_key=idempotency_key,
         pipeline_version=pipeline_version,
         analysis_mode=analysis_mode,
+        stateful_correlation_enabled=False if isolated else None,
     )
 
 
-def analyze_file(file_path: str):
+def analyze_file(file_path: str, *, isolated: bool = False):
     console.print(f"[bold blue]Starting File Analysis: {file_path}[/bold blue]")
 
     result = _run_persistent_analysis(
-        file_path, run_triage=True, analysis_mode="analyze", source_name="cli"
+        file_path,
+        run_triage=True,
+        analysis_mode="analyze",
+        source_name="cli",
+        isolated=isolated,
     )
 
     _print_analysis_summary(result)
@@ -199,12 +210,16 @@ def ingest_file_only(file_path: str):
         for w in result.warnings:
             console.print(f"  - {w}")
 
-def detect_file_only(file_path: str):
+def detect_file_only(file_path: str, *, isolated: bool = False):
     console.print(f"[bold blue]Starting File Detection: {file_path}[/bold blue]")
 
     console.print("[bold blue]Running Detection Engine...[/bold blue]")
     result = _run_persistent_analysis(
-        file_path, run_triage=False, analysis_mode="detect", source_name="cli_detect"
+        file_path,
+        run_triage=False,
+        analysis_mode="detect",
+        source_name="cli_detect",
+        isolated=isolated,
     )
     det_result = result.detection_result
     
@@ -231,13 +246,18 @@ if __name__ == "__main__":
     parser.add_argument("--file", type=str, help="Path to JSONL log file to analyze end-to-end")
     parser.add_argument("--ingest-file", type=str, help="Path to file to only run ingestion and print summary")
     parser.add_argument("--detect-file", type=str, help="Path to file to only run deterministic detection and print summary")
+    parser.add_argument(
+        "--isolated",
+        action="store_true",
+        help="Disable cross-job correlation for this analysis",
+    )
     args = parser.parse_args()
     
     if args.detect_file:
-        detect_file_only(args.detect_file)
+        detect_file_only(args.detect_file, isolated=args.isolated)
     elif args.ingest_file:
         ingest_file_only(args.ingest_file)
     elif args.file:
-        analyze_file(args.file)
+        analyze_file(args.file, isolated=args.isolated)
     else:
         run_mock_test()

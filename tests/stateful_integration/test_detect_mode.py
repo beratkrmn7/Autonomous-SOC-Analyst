@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 
 from agent.persistence.orm_models import (
     Incident,
+    IncidentCorrelationState,
     Report,
     SearchIndexOutbox,
     TriageRun,
@@ -60,6 +61,53 @@ def test_two_jobs_correlate_into_one_canonical_persistent_incident(session_facto
     with session_factory() as session:
         incidents = session.query(Incident).all()
         assert [i.incident_id for i in incidents] == ["INC-A"]  # only the canonical
+
+
+def test_cross_job_provenance_counts_current_and_prior_primary_events(
+    session_factory,
+) -> None:
+    settings = make_settings(enabled=True)
+    _, result_b = _run_campaign(session_factory, settings)
+    incident = result_b.detection_result.incidents[0]
+    assert incident.metrics["contributing_job_count"] == 2
+    assert incident.metrics["current_job_event_count"] == 1
+    assert incident.metrics["prior_job_event_count"] == 1
+
+
+def test_per_job_isolation_reuses_disabled_resolver_guard(session_factory) -> None:
+    settings = make_settings(enabled=True)
+    events_a, sig_a, inc_a = campaign_job_a()
+    run_job(
+        session_factory,
+        settings,
+        job_id="job-a",
+        events=events_a,
+        signals=[sig_a],
+        incidents=[inc_a],
+        run_triage=False,
+        stateful_correlation_enabled=False,
+    )
+    events_b, sig_b, inc_b = campaign_job_b()
+    result_b = run_job(
+        session_factory,
+        settings,
+        job_id="job-b",
+        events=events_b,
+        signals=[sig_b],
+        incidents=[inc_b],
+        run_triage=False,
+        stateful_correlation_enabled=False,
+    )
+
+    assert [incident.incident_id for incident in result_b.detection_result.incidents] == [
+        "INC-B"
+    ]
+    with session_factory() as session:
+        assert {row.incident_id for row in session.query(Incident).all()} == {
+            "INC-A",
+            "INC-B",
+        }
+        assert session.query(IncidentCorrelationState).count() == 0
 
 
 def test_both_jobs_associated_with_the_canonical_incident(session_factory) -> None:

@@ -649,7 +649,11 @@ class AnalysisService:
         }
 
     def _process_events_stateful(
-        self, result: AnalysisResult, run_triage: bool, job_id: Optional[str]
+        self,
+        result: AnalysisResult,
+        run_triage: bool,
+        job_id: Optional[str],
+        stateful_correlation_enabled: Optional[bool] = None,
     ) -> AnalysisResult:
         det_result = result.detection_result
         assert det_result is not None
@@ -703,6 +707,7 @@ class AnalysisService:
                         job=job,
                         settings=settings,
                         detection_settings=det_settings,
+                        enabled=stateful_correlation_enabled,
                     )
                     self._raise_if_cancelled(job_id)
                     self._account_stateful_status(r.status, stateful_metrics)
@@ -755,6 +760,22 @@ class AnalysisService:
                     self._raise_if_cancelled(job_id)
                     final_resolve = combined_by_final_id.get(final_id)
                     row_event_ids = {str(e.event_id) for e in row.events}
+                    primary_event_ids = {
+                        str(event.event_id)
+                        for event in row.events
+                        if not event.is_context
+                    }
+                    current_primary_event_ids = (
+                        primary_event_ids & current_job_event_ids
+                    )
+                    row.metrics = {  # type: ignore[assignment]
+                        **dict(row.metrics or {}),
+                        "contributing_job_count": len(row.jobs),
+                        "current_job_event_count": len(current_primary_event_ids),
+                        "prior_job_event_count": len(
+                            primary_event_ids - current_job_event_ids
+                        ),
+                    }
                     row_signal_ids = {str(s.signal_id) for s in row.signals}
                     hydrated = hydrate_canonical_incident(
                         uow,
@@ -951,7 +972,7 @@ class AnalysisService:
 
         return initial_state
 
-    def analyze_file(self, file_path: str, *, run_triage: bool = True, source_name: Optional[str] = None, file_sha256: Optional[str] = None, idempotency_key: Optional[str] = None, pipeline_version: Optional[str] = None, analysis_mode: Optional[str] = None, job_id: Optional[str] = None) -> AnalysisResult:
+    def analyze_file(self, file_path: str, *, run_triage: bool = True, source_name: Optional[str] = None, file_sha256: Optional[str] = None, idempotency_key: Optional[str] = None, pipeline_version: Optional[str] = None, analysis_mode: Optional[str] = None, job_id: Optional[str] = None, stateful_correlation_enabled: Optional[bool] = None) -> AnalysisResult:
         # 1. Check Idempotency if key is provided and job_id is NOT provided
         from agent.persistence.orm_models import IngestionJob
         import uuid
@@ -1180,7 +1201,8 @@ class AnalysisService:
             file_sha256=file_sha256,
             idempotency_key=idempotency_key,
             pipeline_version=pipeline_version,
-            analysis_mode=analysis_mode
+            analysis_mode=analysis_mode,
+            stateful_correlation_enabled=stateful_correlation_enabled,
         )
         return res
 
@@ -1193,7 +1215,7 @@ class AnalysisService:
             job_id=None
         )
 
-    def _process_events(self, events: List[CanonicalLogEvent], run_triage: bool, ingestion_result: Any, source_name: str, job_id: Optional[str] = None, file_sha256: Optional[str] = None, idempotency_key: Optional[str] = None, pipeline_version: Optional[str] = None, analysis_mode: Optional[str] = None) -> AnalysisResult:
+    def _process_events(self, events: List[CanonicalLogEvent], run_triage: bool, ingestion_result: Any, source_name: str, job_id: Optional[str] = None, file_sha256: Optional[str] = None, idempotency_key: Optional[str] = None, pipeline_version: Optional[str] = None, analysis_mode: Optional[str] = None, stateful_correlation_enabled: Optional[bool] = None) -> AnalysisResult:
         # 2. Filtering
         filter_result = self.filter_engine.filter_events(events)
         
@@ -1229,9 +1251,17 @@ class AnalysisService:
         # no persistence backend is available.
         if (
             self.uow is not None
-            and cast(UnitOfWork, self.uow).settings.stateful_correlation_enabled
+            and (
+                cast(UnitOfWork, self.uow).settings.stateful_correlation_enabled
+                or stateful_correlation_enabled is True
+            )
         ):
-            return self._process_events_stateful(result, run_triage, job_id)
+            return self._process_events_stateful(
+                result,
+                run_triage,
+                job_id,
+                stateful_correlation_enabled=stateful_correlation_enabled,
+            )
 
         # 4. Persistence setup (Optional Phase 5 integration point)
         # If we have a Unit Of Work, we can persist the canonical events, signals, and incidents here.

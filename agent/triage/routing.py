@@ -215,12 +215,15 @@ def generate_deterministic_report(
         port_summary += ", ..."
     service_summary = ", ".join(services) or "none classified"
 
+    from agent.triage.provenance import format_event_provenance
+
+    event_provenance = format_event_provenance(event_count, incident.metrics)
     lines = [
         f"# Deterministic Report: {incident.title}",
         "",
         f"- **Observed activity:** {incident.incident_type} ({incident.incident_family})",
         f"- **Source:** {incident.primary_entity}",
-        f"- **Events:** {event_count} total, {blocked_count} blocked",
+        f"- **Events:** {event_provenance} total, {blocked_count} blocked",
         f"- **Distinct targets:** {len(target_ips)} ({target_summary})",
         f"- **Ports:** {port_summary}",
         f"- **Services:** {service_summary}",

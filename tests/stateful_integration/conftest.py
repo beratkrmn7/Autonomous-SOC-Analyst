@@ -170,6 +170,7 @@ def run_job(
     run_triage: bool,
     suppressed: Optional[Sequence[DetectionSignal]] = None,
     uncorrelated: Optional[Sequence[str]] = None,
+    stateful_correlation_enabled: Optional[bool] = None,
 ) -> AnalysisResult:
     """Run one analysis job through the shared AnalysisService flow.
 
@@ -194,6 +195,7 @@ def run_job(
         ingestion_result=None,
         source_name="firewall.json",
         job_id=job_id,
+        stateful_correlation_enabled=stateful_correlation_enabled,
     )
 
 

@@ -517,12 +517,16 @@ class StatefulIncidentCorrelationService:
         settings: Optional[Settings] = None,
         detection_settings: Optional[DetectionSettings] = None,
         now: Optional[datetime] = None,
+        enabled: Optional[bool] = None,
     ) -> StatefulResolveResult:
         settings = settings or uow.settings
         detection_settings = detection_settings or DetectionSettings()
         now = now or datetime.now(timezone.utc)
 
-        if not settings.stateful_correlation_enabled:
+        correlation_enabled = (
+            settings.stateful_correlation_enabled if enabled is None else enabled
+        )
+        if not correlation_enabled:
             return self._result("disabled", incoming_bundle)
 
         profile = derive_stateful_profile(

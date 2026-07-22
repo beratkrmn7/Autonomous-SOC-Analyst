@@ -30,6 +30,18 @@ def test_detect_and_analyze_are_separate_scopes() -> None:
     assert detect_key != analyze_key
 
 
+def test_isolated_correlation_has_a_distinct_scope_without_changing_old_keys() -> None:
+    configured = compute_idempotency_key("abc123", "1.0.0", "analyze")
+    isolated = compute_idempotency_key(
+        "abc123", "1.0.0", "analyze", "isolated"
+    )
+    assert configured == hashlib.sha256(b"abc123:1.0.0:analyze").hexdigest()
+    assert isolated == hashlib.sha256(
+        b"abc123:1.0.0:analyze:isolated"
+    ).hexdigest()
+    assert isolated != configured
+
+
 def test_all_entry_points_reference_the_same_key_function() -> None:
     # CLI (service_factory re-export), synchronous API (server), and the
     # background worker all resolve to the one shared implementation.
