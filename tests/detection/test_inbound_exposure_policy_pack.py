@@ -459,7 +459,7 @@ def test_dnat_rule_reports_translated_destination_and_port() -> None:
     assert signal.metrics["original_destination_port"] == 443
     assert signal.metrics["translated_destination"] == "10.0.0.60"
     assert signal.metrics["translated_destination_port"] == 6379
-    assert signal.metrics["service"] == "database"
+    assert signal.metrics["service"] == "redis"
 
 
 @pytest.mark.parametrize("port", sorted(CRITICAL_MANAGEMENT_PORTS))
@@ -519,27 +519,12 @@ def test_sensitive_service_set_is_exact_and_excludes_web_ports() -> None:
         139,
         445,
         1433,
-        1521,
-        2022,
-        2222,
-        2375,
-        2376,
         3306,
         3389,
         5432,
         5900,
-        5901,
-        5902,
-        5903,
-        5904,
-        5905,
-        5985,
-        5986,
-        6379,
-        6443,
-        9200,
-        10250,
-        27017,
+        135,
+        389,
     }
 
     assert SENSITIVE_SERVICE_PORTS == expected
@@ -547,8 +532,50 @@ def test_sensitive_service_set_is_exact_and_excludes_web_ports() -> None:
     assert sensitive_service_for_port(443) is None
 
 
+def test_critical_management_set_is_exact() -> None:
+    assert CRITICAL_MANAGEMENT_PORTS == {
+        161,
+        623,
+        2375,
+        5985,
+        6379,
+        9200,
+        10250,
+        11211,
+        27017,
+    }
+
+
+@pytest.mark.parametrize(
+    ("port", "service"),
+    [
+        (20, "ftp_data"),
+        (21, "ftp"),
+        (623, "ipmi"),
+        (6379, "redis"),
+        (9200, "elasticsearch"),
+        (27017, "mongodb"),
+    ],
+)
+def test_exposure_service_labels_are_specific(port: int, service: str) -> None:
+    assert sensitive_service_for_port(port) == service
+
+
 @pytest.mark.parametrize("port", [22, 3389])
-def test_general_ssh_and_rdp_exposure_requires_repeated_events(port: int) -> None:
+def test_default_general_exposure_threshold_reports_one_allowed_event(port: int) -> None:
+    signals = InboundSensitiveServiceAllowedRule().evaluate(
+        [_event(f"single-{port}", 0, dst_port=port)],
+        DetectionContext(
+            settings=DetectionSettings(), analysis_started_at=FIXED_TIME
+        ),
+    )
+    assert len(signals) == 1
+
+
+@pytest.mark.parametrize("port", [22, 3389])
+def test_general_ssh_and_rdp_honor_an_explicit_repeated_event_threshold(
+    port: int,
+) -> None:
     rule = InboundSensitiveServiceAllowedRule()
     context = DetectionContext(settings=_settings(), analysis_started_at=FIXED_TIME)
     isolated = [_event(f"isolated-{port}", 0, dst_port=port)]
@@ -561,7 +588,7 @@ def test_general_ssh_and_rdp_exposure_requires_repeated_events(port: int) -> Non
     assert len(rule.evaluate(repeated, context)) == 1
 
 
-def test_wan_to_lan_requires_both_explicit_zones() -> None:
+def test_wan_to_lan_falls_back_to_shared_direction_when_outbound_zone_is_missing() -> None:
     events = _wan_lan_positive()
     missing_outbound = [event.model_copy(update={"outbound_zone": None}) for event in events]
     inferred_only = [
@@ -571,7 +598,7 @@ def test_wan_to_lan_requires_both_explicit_zones() -> None:
     rule = WanToLanSensitiveServiceAllowedRule()
     context = DetectionContext(settings=_settings(), analysis_started_at=FIXED_TIME)
 
-    assert rule.evaluate(missing_outbound, context) == []
+    assert len(rule.evaluate(missing_outbound, context)) == 1
     assert rule.evaluate(inferred_only, context) == []
 
 
@@ -740,7 +767,7 @@ def test_inbound_exposure_setting_defaults() -> None:
     settings = DetectionSettings()
 
     assert settings.INBOUND_EXPOSURE_WINDOW_SECONDS == 300
-    assert settings.INBOUND_SENSITIVE_MIN_ALLOWED_EVENTS == 3
+    assert settings.INBOUND_SENSITIVE_MIN_ALLOWED_EVENTS == 1
     assert settings.INBOUND_SENSITIVE_MIN_DISTINCT_DESTINATIONS == 1
     assert settings.CRITICAL_MANAGEMENT_EXPOSURE_MIN_EVENTS == 1
     assert settings.WAN_TO_LAN_MIN_ALLOWED_EVENTS == 2

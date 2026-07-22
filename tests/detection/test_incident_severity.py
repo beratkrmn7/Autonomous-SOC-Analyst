@@ -77,6 +77,16 @@ def test_allowed_critical_management_service_is_critical() -> None:
     assert _severity([event], family="firewall_exposure", signal_severity="high") == "critical"
 
 
+def test_allowed_ipmi_management_service_is_critical() -> None:
+    event = build_event(
+        "allowed-ipmi",
+        action="pass",
+        dst_ip="10.0.0.10",
+        dst_port=623,
+    )
+    assert _severity([event], family="firewall_exposure", signal_severity="high") == "critical"
+
+
 def test_unrelated_family_keeps_signal_based_severity() -> None:
     event = build_event("dos", action="block", dst_port=443)
     assert _severity([event], family="network_dos", signal_severity="high") == "high"

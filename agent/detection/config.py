@@ -159,7 +159,7 @@ class DetectionSettings(BaseModel):
         default=int(os.getenv("INBOUND_EXPOSURE_WINDOW_SECONDS", "300")), gt=0
     )
     INBOUND_SENSITIVE_MIN_ALLOWED_EVENTS: int = Field(
-        default=int(os.getenv("INBOUND_SENSITIVE_MIN_ALLOWED_EVENTS", "3")),
+        default=int(os.getenv("INBOUND_SENSITIVE_MIN_ALLOWED_EVENTS", "1")),
         gt=0,
     )
     INBOUND_SENSITIVE_MIN_DISTINCT_DESTINATIONS: int = Field(

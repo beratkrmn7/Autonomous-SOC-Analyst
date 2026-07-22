@@ -26,6 +26,7 @@ from agent.detection.detectors.exposure_helpers import (
 )
 from agent.detection.detectors.scan_helpers import (
     bounded_sorted_values,
+    classify_service,
     is_allowed,
     is_blocked,
     is_spi_anomaly_event,
@@ -39,6 +40,7 @@ from agent.detection.evidence import (
 from agent.detection.models import DetectionEvidence, DetectionSignal, generate_signal_id
 from agent.detection.scoring import calculate_signal_confidence
 from agent.schema import CanonicalLogEvent
+from agent.triage.network_context import derive_flow_direction
 
 
 MetricValue = int | float | str | bool
@@ -82,7 +84,9 @@ def _exposure_event(
 
 
 def _service_or_exact_port(port: int | None) -> str | None:
-    service = sensitive_service_for_port(port)
+    # Sequence matching uses the complete deterministic service taxonomy,
+    # not only the narrower inbound-exposure tiers.
+    service = classify_service(port)
     if service is not None:
         return service
     if port is not None and 1 <= port <= 65_535:
@@ -470,7 +474,7 @@ class WanToLanSensitiveServiceAllowedRule(BaseDetectionRule):
         family="firewall_policy",
         priority=45,
         supported_event_types=(),
-        required_fields=("src_ip", "protocol", "action", "inbound_zone", "outbound_zone"),
+        required_fields=("src_ip", "protocol", "action", "inbound_zone"),
         signal_type="wan_to_lan_sensitive_service_allowed",
         default_severity="high",
         mitre_techniques=(),
@@ -491,7 +495,13 @@ class WanToLanSensitiveServiceAllowedRule(BaseDetectionRule):
                 item is not None
                 and is_allowed(event)
                 and is_explicit_wan_zone(event.inbound_zone)
-                and is_explicit_lan_zone(event.outbound_zone)
+                and (
+                    is_explicit_lan_zone(event.outbound_zone)
+                    or (
+                        not event.outbound_zone
+                        and derive_flow_direction(event) == "inbound"
+                    )
+                )
                 and not (
                     is_private_source(event)
                     and is_private_effective_destination(event)

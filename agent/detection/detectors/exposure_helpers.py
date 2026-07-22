@@ -1,10 +1,6 @@
 import re
 
-from agent.detection.detectors.scan_helpers import (
-    SERVICE_PORTS,
-    classify_service,
-    parse_ip_address,
-)
+from agent.detection.detectors.scan_helpers import classify_service, parse_ip_address
 from agent.schema import CanonicalLogEvent
 
 
@@ -16,12 +12,15 @@ LAN_ZONE_TOKENS = frozenset({"lan", "internal", "inside", "trust"})
 DMZ_ZONE_TOKENS = frozenset({"dmz"})
 
 SENSITIVE_SERVICE_PORTS = frozenset(
-    port for ports in SERVICE_PORTS.values() for port in ports
+    {20, 21, 22, 23, 135, 139, 389, 445, 1433, 3306, 3389, 5432, 5900}
 )
 DMZ_ADMINISTRATIVE_PORTS = frozenset(
     {8000, 8080, 8443, 8888, 9000, 9443, 10000}
 )
-CRITICAL_MANAGEMENT_PORTS = frozenset({2375, 6379, 9200, 10250, 27017})
+CRITICAL_MANAGEMENT_PORTS = frozenset(
+    {161, 623, 2375, 5985, 6379, 9200, 10250, 11211, 27017}
+)
+EXPOSURE_SERVICE_PORTS = SENSITIVE_SERVICE_PORTS | CRITICAL_MANAGEMENT_PORTS
 
 
 def _zone_tokens(value: object) -> tuple[str, ...]:
@@ -164,7 +163,7 @@ def classify_network_direction(event: CanonicalLogEvent) -> str:
 
 
 def sensitive_service_for_port(port: int | None) -> str | None:
-    if port not in SENSITIVE_SERVICE_PORTS:
+    if port not in EXPOSURE_SERVICE_PORTS:
         return None
     return classify_service(port)
 
