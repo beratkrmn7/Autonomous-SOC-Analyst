@@ -26,6 +26,7 @@ from agent.api.health import router as health_router  # noqa: E402
 from agent.api.v1.workers import router as v1_workers_router  # noqa: E402
 from agent.api.v1.search import router as v1_search_router  # noqa: E402
 from agent.api.deps import get_uow, require_permission  # noqa: E402
+from agent.application.idempotency import compute_idempotency_key  # noqa: E402
 from agent.application.authentication import (  # noqa: E402
     AUTHENTICATION_ERROR,
     AuthenticatedPrincipal,
@@ -353,8 +354,8 @@ async def detect_file(
     try:
         analysis_mode = "detect"
         file_sha256 = calculate_file_sha256(temp_path)
-        idempotency_key = (
-            f"{file_sha256}:{settings.pipeline_version}:{analysis_mode}"
+        idempotency_key = compute_idempotency_key(
+            file_sha256, settings.pipeline_version, analysis_mode
         )
         
         svc = AnalysisService(uow=uow)
@@ -459,8 +460,8 @@ async def analyze_file(
     try:
         analysis_mode = "analyze"
         file_sha256 = calculate_file_sha256(temp_path)
-        idempotency_key = (
-            f"{file_sha256}:{settings.pipeline_version}:{analysis_mode}"
+        idempotency_key = compute_idempotency_key(
+            file_sha256, settings.pipeline_version, analysis_mode
         )
         
         svc = AnalysisService(uow=uow)

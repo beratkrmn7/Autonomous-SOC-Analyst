@@ -2,7 +2,7 @@ import logging
 import uuid
 from dataclasses import replace
 from functools import partial
-from typing import Optional, List, Dict, Any, cast
+from typing import Optional, List, Dict, Any, Sequence, cast
 from agent.application.search_outbox import SearchOutboxService
 from agent.persistence.unit_of_work import UnitOfWork
 from agent.persistence.lifecycle import IncidentLifecycle
@@ -864,7 +864,9 @@ class AnalysisService:
         """
         bundle = hydrated.bundle
         initial_state = self._build_initial_state(
-            bundle, hydrated.event_map, hydrated.signal_map
+            bundle, hydrated.event_map, hydrated.signal_map,
+            current_job_event_ids=hydrated.current_job_event_ids,
+            current_job_signal_ids=hydrated.current_job_signal_ids,
         )
         if job_id and self.cancellation_checker:
             initial_state["cancellation_check"] = partial(
@@ -1335,7 +1337,15 @@ class AnalysisService:
                 
         return result
 
-    def _build_initial_state(self, incident: Any, event_map: Dict[str, CanonicalLogEvent], signal_map: Dict[str, Any]) -> IncidentState:
+    def _build_initial_state(
+        self,
+        incident: Any,
+        event_map: Dict[str, CanonicalLogEvent],
+        signal_map: Dict[str, Any],
+        *,
+        current_job_event_ids: Sequence[str] = (),
+        current_job_signal_ids: Sequence[str] = (),
+    ) -> IncidentState:
         # Reconstruct the logic that was duplicated in main.py and server.py
         if isinstance(incident, dict):
             incident_id = incident.get("incident_id")
@@ -1401,7 +1411,16 @@ class AnalysisService:
             "events": incident_events,
             "context_events": context_events,
         })
-            
+
+        # The canonical primary signal and this job's provenance let the bounded
+        # provider view preserve current-job evidence and the primary identity
+        # instead of only the lowest-sorted historical IDs.
+        primary_signal_id = None
+        if isinstance(incident_bundle, dict):
+            primary_signal_id = (incident_bundle.get("metrics") or {}).get(
+                "primary_signal_id"
+            )
+
         return {
             "incident": triage_context.model_dump(mode="json"),
             "incident_id": str(incident_id),
@@ -1415,4 +1434,7 @@ class AnalysisService:
             "tool_results": [],
             "errors": [],
             "detection_engine_executed": True,
+            "primary_signal_id": primary_signal_id,
+            "current_job_event_ids": list(current_job_event_ids),
+            "current_job_signal_ids": list(current_job_signal_ids),
         }

@@ -49,20 +49,21 @@ class BackgroundAnalysisService:
         Submits a file for background analysis.
         Returns a tuple of (job_id, reused, status).
         """
-        import hashlib
+        from agent.application.idempotency import compute_idempotency_key
         job_id = str(uuid.uuid4())
         reused = False
         needs_dispatch = False
 
         with self.uow:
             assert self.uow.session is not None
-            
+
             # 1. Stage the file (which gives us the SHA-256)
             staged_path, file_sha256 = self.staging_store.stage_file(stream, job_id, original_filename)
 
-            # 2. Derive idempotency key
-            idemp_string = f"{file_sha256}:{pipeline_version}:{analysis_mode}"
-            idempotency_key = hashlib.sha256(idemp_string.encode('utf-8')).hexdigest()
+            # 2. Derive idempotency key (shared across CLI/API/worker)
+            idempotency_key = compute_idempotency_key(
+                file_sha256, pipeline_version, analysis_mode
+            )
 
             # 3. Check idempotency
             job = self.uow.session.query(IngestionJob).filter_by(idempotency_key=idempotency_key).first()

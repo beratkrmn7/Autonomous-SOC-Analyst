@@ -97,6 +97,12 @@ class IncidentState(TypedDict, total=False):
     candidate_evidence: List[dict]
     detected_signals: List[dict]
     safe_triage_input: NotRequired[dict]
+
+    # Phase 6E.4: current-job provenance and the canonical primary signal, used
+    # to keep this job's material evidence visible inside the bounded LLM view.
+    primary_signal_id: NotRequired[Optional[str]]
+    current_job_event_ids: NotRequired[List[str]]
+    current_job_signal_ids: NotRequired[List[str]]
     
     # State fields added in Phase 3 - Stage 1
     search_history: Annotated[List[dict], append_list]

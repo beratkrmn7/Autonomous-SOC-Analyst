@@ -35,11 +35,16 @@ class TriageRunner:
     def run(self, state: IncidentState, context: TriageIncidentContext) -> TriageRunResult:
         start_time = time.monotonic()
         
-        # 1. Build TriageInput
+        # 1. Build TriageInput. Current-job provenance and the canonical primary
+        # signal keep this job's material evidence and the primary identity
+        # visible inside the bounded provider view.
         triage_input = build_triage_input(
             context=context,
             detected_signals=state.get("detected_signals", []),
-            candidate_evidence=state.get("candidate_evidence", [])
+            candidate_evidence=state.get("candidate_evidence", []),
+            preferred_signal_ids=state.get("current_job_signal_ids", []),
+            preferred_event_ids=state.get("current_job_event_ids", []),
+            primary_signal_id=state.get("primary_signal_id"),
         )
         
         state["safe_triage_input"] = triage_input.model_dump()
