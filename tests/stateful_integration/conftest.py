@@ -187,7 +187,10 @@ def run_job(
         suppressed=suppressed,
         uncorrelated=uncorrelated,
     )
-    service = AnalysisService(uow=UnitOfWork(session_factory=session_factory, settings=settings))
+    service = AnalysisService(
+        uow=UnitOfWork(session_factory=session_factory, settings=settings),
+        llm_enabled=settings.llm_enabled,
+    )
     service.detection_engine.analyze = lambda ev, ctx: det_result  # type: ignore[assignment]
     return service._process_events(
         events=list(events),

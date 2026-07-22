@@ -42,6 +42,31 @@ def test_individual_triage_calls_provider_exactly_once(
     assert result.routing_metrics["provider_invocation_count"] == 1
 
 
+def test_disabled_llm_does_not_attempt_individual_triage_provider(
+    session_factory, fake_app, monkeypatch
+) -> None:
+    settings = make_settings(enabled=True, llm_enabled=False)
+    _force_route(monkeypatch, "individual_triage", llm=True)
+    events, signal, incident = campaign_job_a()
+
+    result = run_job(
+        session_factory,
+        settings,
+        job_id="job-disabled-provider",
+        events=events,
+        signals=[signal],
+        incidents=[incident],
+        run_triage=True,
+    )
+
+    assert fake_app.calls == 0
+    assert result.routing_metrics["individual_triage_count"] == 1
+    assert result.routing_metrics["provider_invocation_count"] == 0
+    assert result.incidents[0]["triage_verdict"] == "needs_review"
+    assert result.incidents[0]["llm_invoked"] is False
+    assert result.incidents[0]["incident_type"] == incident.incident_type
+
+
 def test_deterministic_report_route_makes_zero_provider_calls(
     session_factory, fake_app, monkeypatch
 ) -> None:

@@ -192,9 +192,15 @@ class AnalysisService:
         self,
         uow: Optional[Any] = None,
         cancellation_checker: Optional[JobCancellationChecker] = None,
+        llm_enabled: Optional[bool] = None,
     ):
+        if llm_enabled is None:
+            from agent.config import get_settings
+
+            llm_enabled = get_settings().llm_enabled
         self.uow = uow
         self.cancellation_checker = cancellation_checker
+        self.llm_enabled = llm_enabled
         self.ingest = IngestionPipeline()
         self.filter_engine = EventFilter()
         self.detection_engine = DetectionEngine()
@@ -911,6 +917,14 @@ class AnalysisService:
 
         if decision.route == "individual_triage":
             routing_metrics["individual_triage_count"] += 1
+            if not self.llm_enabled:
+                initial_state["llm_invoked"] = False
+                initial_state["triage_verdict"] = "needs_review"
+                initial_state["review_reason"] = "provider_unavailable"
+                initial_state["incident_type"] = bundle.incident_type
+                initial_state["severity"] = "none"
+                initial_state["confidence_score"] = 0.0
+                return initial_state
             routing_metrics["provider_invocation_count"] += 1
             try:
                 self._raise_if_cancelled(job_id)
@@ -1292,6 +1306,15 @@ class AnalysisService:
 
             if decision.route == "individual_triage":
                 routing_metrics["individual_triage_count"] += 1
+                if not self.llm_enabled:
+                    initial_state["llm_invoked"] = False
+                    initial_state["triage_verdict"] = "needs_review"
+                    initial_state["review_reason"] = "provider_unavailable"
+                    initial_state["incident_type"] = inc.incident_type
+                    initial_state["severity"] = "none"
+                    initial_state["confidence_score"] = 0.0
+                    result.incidents.append(initial_state)
+                    continue
                 routing_metrics["provider_invocation_count"] += 1
                 try:
                     self._raise_if_cancelled(job_id)

@@ -40,6 +40,7 @@ def test_pf_firewall_preserves_spi_action_metadata_and_excerpt():
         "original_tcp_flags": "AR",
         "tcp_flag_tokens": ["RST", "ACK"],
         "tcp_flags_explicit_none": False,
+        "source_timezone_offset": "+03:00",
     }
     assert "reason=unexpected tcp flags" in event.safe_message_excerpt
     assert "spi=true" in event.safe_message_excerpt
@@ -72,6 +73,7 @@ def test_pf_firewall_normal_block_is_not_spi():
         "original_tcp_flags": "S",
         "tcp_flag_tokens": ["SYN"],
         "tcp_flags_explicit_none": False,
+        "source_timezone_offset": "+03:00",
     }
     assert "spi=true" not in event.safe_message_excerpt
 

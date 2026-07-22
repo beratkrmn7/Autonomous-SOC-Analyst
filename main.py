@@ -168,10 +168,8 @@ def _print_analysis_summary(result) -> None:
         )
         # With stateful correlation enabled this is the final canonical count.
         console.print(f"Final incidents: {det_result.metrics.incident_count}")
-    metrics = result.routing_metrics or {}
-    report_count = (
-        metrics.get("individual_triage_count", 0)
-        + metrics.get("deterministic_report_count", 0)
+    report_count = sum(
+        1 for incident_state in result.incidents if incident_state.get("final_report")
     )
     console.print(f"Reports: {report_count}")
 

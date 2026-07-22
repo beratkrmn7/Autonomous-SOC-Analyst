@@ -75,6 +75,7 @@ def test_canonical_event_network_fields_round_trip() -> None:
             "tcp_flag_tokens": ["RST", "ACK"],
             "tcp_flags_explicit_none": False,
             "pf_event_type": "natural",
+            "source_timezone_offset": "+03:00",
         },
     )
 
@@ -113,6 +114,7 @@ def test_event_persistence_bounds_collections_and_allowlists_metadata() -> None:
         parser_metadata={
             "spi_anomaly": True,
             "tcp_flag_tokens": ["RST", "ACK", "ACK"],
+            "source_timezone_offset": "+03:00",
             "raw_record": {"secret": "must-not-persist"},
             "secret_token": "must-not-persist",
         },
@@ -124,6 +126,7 @@ def test_event_persistence_bounds_collections_and_allowlists_metadata() -> None:
     assert orm_event.destination_fqdns == ["target.example.test"]
     assert orm_event.parser_metadata == {
         "spi_anomaly": True,
+        "source_timezone_offset": "+03:00",
         "tcp_flag_tokens": ["RST", "ACK"],
     }
 

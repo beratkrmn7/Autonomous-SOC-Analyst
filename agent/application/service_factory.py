@@ -36,4 +36,7 @@ def build_persistent_analysis_service(
 ) -> AnalysisService:
     """Construct an AnalysisService backed by the configured database."""
     settings = settings or get_settings()
-    return AnalysisService(uow=UnitOfWork(settings=settings))
+    return AnalysisService(
+        uow=UnitOfWork(settings=settings),
+        llm_enabled=settings.llm_enabled,
+    )

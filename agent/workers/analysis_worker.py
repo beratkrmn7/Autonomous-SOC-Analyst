@@ -123,6 +123,7 @@ class AnalysisWorker:
                 service = AnalysisService(
                     uow=uow,
                     cancellation_checker=self.cancellation_checker,
+                    llm_enabled=settings.llm_enabled,
                 )
                 
                 logger.info(f"Worker {self.worker_id} starting analysis for job {job_id}")

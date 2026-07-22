@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from rich.console import Console
 from rich.panel import Panel
@@ -36,6 +36,44 @@ def _format_duration(seconds: float) -> str:
     if hours:
         return f"{hours}h {minutes:02d}m {remainder:02d}s"
     return f"{minutes}m {remainder:02d}s"
+
+
+def _source_timezone(
+    event_lookup: Mapping[str, CanonicalLogEvent],
+) -> timezone | None:
+    offsets = sorted(
+        {
+            value
+            for event in event_lookup.values()
+            if isinstance(event.parser_metadata, dict)
+            if isinstance(
+                value := event.parser_metadata.get("source_timezone_offset"), str
+            )
+        }
+    )
+    if len(offsets) != 1:
+        return None
+    value = offsets[0]
+    if len(value) != 6 or value[0] not in {"+", "-"} or value[3] != ":":
+        return None
+    try:
+        hours = int(value[1:3])
+        minutes = int(value[4:6])
+    except ValueError:
+        return None
+    if hours > 23 or minutes > 59:
+        return None
+    direction = 1 if value[0] == "+" else -1
+    return timezone(direction * timedelta(hours=hours, minutes=minutes))
+
+
+def _in_source_timezone(value: datetime, source_timezone: timezone) -> datetime:
+    # SQLite may hydrate an originally aware UTC value as a naive datetime.
+    # Canonical timestamps are normalized to UTC before persistence, so UTC is
+    # the only safe interpretation for a naive hydrated value here.
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(source_timezone)
 
 
 def _incident_events(
@@ -142,8 +180,12 @@ def render_soc_brief(
     )
     if timestamps:
         first_seen, last_seen = timestamps[0], timestamps[-1]
+        source_timezone = _source_timezone(event_lookup)
+        if source_timezone is not None:
+            first_seen = _in_source_timezone(first_seen, source_timezone)
+            last_seen = _in_source_timezone(last_seen, source_timezone)
         window = (
-            f"{_format_timestamp(first_seen)} – {_format_timestamp(last_seen)} · "
+            f"{_format_timestamp(first_seen)} - {_format_timestamp(last_seen)} | "
             f"{_format_duration((last_seen - first_seen).total_seconds())}"
         )
     else:
@@ -153,7 +195,7 @@ def render_soc_brief(
         "SOC TRIAGE BRIEF\n"
         f"Source : {source_name}\n"
         f"Window : {window}\n"
-        f"Run    : {job_id or 'not persisted'} · Generated: "
+        f"Run    : {job_id or 'not persisted'} | Generated: "
         f"{_format_timestamp(generated_at)}"
     )
     console.print(Panel(header, border_style="cyan"))
@@ -162,9 +204,9 @@ def render_soc_brief(
     console.print(
         Text(
             "FUNNEL  "
-            f"{funnel.get('total_events', 0):,} events → "
-            f"{funnel.get('blocked_events', 0):,} blocked → "
-            f"{funnel.get('policy_exposures', 0):,} policy exposures → "
+            f"{funnel.get('total_events', 0):,} events -> "
+            f"{funnel.get('blocked_events', 0):,} blocked -> "
+            f"{funnel.get('policy_exposures', 0):,} policy exposures -> "
             f"{funnel.get('action_items', 0):,} action items",
             style="bold",
         )

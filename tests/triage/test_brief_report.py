@@ -88,6 +88,36 @@ def test_brief_renders_deterministic_facts_provenance_and_evidence() -> None:
     assert "Provider calls for this request: 0" in output
 
 
+def test_brief_restores_persisted_utc_events_to_source_offset() -> None:
+    event = build_event(
+        "offset-event",
+        timestamp=datetime(2026, 7, 10, 6, 50),
+        parser_metadata={"source_timezone_offset": "+03:00"},
+        src_ip="8.8.8.8",
+        dst_ip="10.0.0.20",
+        dst_port=6379,
+        inbound_zone="wan",
+        action="pass",
+    )
+    incident = _incident([event])
+    event_lookup = {event.event_id: event}
+    console = Console(record=True, width=160, color_system=None)
+
+    render_soc_brief(
+        console,
+        rollup=build_rollup([incident], event_lookup),
+        event_lookup=event_lookup,
+        source_name="firewall.json",
+        job_id="job-offset",
+        provider_call_count=0,
+        generated_at=FIXED_TIME,
+    )
+
+    output = console.export_text()
+    assert "2026-07-10 09:50:00+03:00" in output
+    assert "events ->" in output
+
+
 def test_brief_action_sections_are_bounded_to_ten_combined_items() -> None:
     events = [
         build_event(

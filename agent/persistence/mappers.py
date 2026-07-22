@@ -38,6 +38,7 @@ _PERSISTED_METADATA_TEXT_FIELDS = (
     "original_device_action",
     "original_tcp_flags",
     "pf_event_type",
+    "source_timezone_offset",
 )
 
 
