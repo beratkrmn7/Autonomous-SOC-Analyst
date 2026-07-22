@@ -10,10 +10,20 @@ from agent.persistence.orm_models import Base, IngestionJob
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+
+def _reset_test_rate_limiter() -> None:
+    """Keep the legacy global-app tests isolated from process-local counters."""
+    limiter = app.state.rate_limit_manager.limiter
+    windows = getattr(limiter, "_windows", None)
+    if isinstance(windows, dict):
+        windows.clear()
+
+
 # Create a file-backed DB for all idempotency tests to correctly simulate cross-thread blocking and parallel writes
 # We create a new file-backed SQLite database for each test session to avoid WinError 32 issues
 @pytest.fixture
 def temp_db():
+    _reset_test_rate_limiter()
     fd, path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
     
@@ -35,7 +45,7 @@ def temp_db():
 
 @pytest.fixture
 def api_client(temp_db):
-    yield TestClient(app)
+    yield TestClient(app, base_url="http://localhost")
 
 def create_temp_log(content: str) -> str:
     fd, path = tempfile.mkstemp(suffix=".jsonl")
@@ -64,7 +74,7 @@ def test_idempotency_exact_duplicate(api_client, temp_db):
              
             with open(path, "rb") as f:
                 res1 = api_client.post("/analyze/file", files={"file": f})
-            assert res1.status_code == 200
+            assert res1.status_code == 200, res1.text
             assert res1.json().get("reused") is False
             
             # Save DB counts
@@ -136,26 +146,41 @@ def test_idempotency_pipeline_version(api_client, temp_db):
     log_content = '{"event_id": "1", "timestamp": "2023-10-10T10:00:00Z"}\n'
     path = create_temp_log(log_content)
     
+    # Seed a completed result using the pre-hardening pipeline version, then
+    # prove the 1.1.0 pipeline creates once and reuses only its own result.
+    from agent.config import Settings, get_settings
+
     try:
-        with open(path, "rb") as f:
-            res1 = api_client.post("/analyze/file", files={"file": f})
-        assert res1.status_code == 200
-        
-        # Override the FastAPI dependency used by the upload endpoint.
-        from agent.config import Settings, get_settings
         app.dependency_overrides[get_settings] = lambda: Settings(
-            pipeline_version="v2.0"
+            pipeline_version="1.0.0"
+        )
+        with open(path, "rb") as f:
+            old_result = api_client.post("/analyze/file", files={"file": f})
+        assert old_result.status_code == 200
+        assert old_result.json().get("reused") is False
+
+        app.dependency_overrides[get_settings] = lambda: Settings(
+            pipeline_version="1.1.0"
         )
         try:
             with open(path, "rb") as f:
-                res2 = api_client.post("/analyze/file", files={"file": f})
-            assert res2.status_code == 200
-            assert res2.json().get("reused") is False
-            
+                first_new = api_client.post("/analyze/file", files={"file": f})
+            assert first_new.status_code == 200
+            assert first_new.json().get("reused") is False
+
+            with open(path, "rb") as f:
+                repeated_new = api_client.post("/analyze/file", files={"file": f})
+            assert repeated_new.status_code == 200
+            assert repeated_new.json().get("reused") is True
+
             uow = UnitOfWork(session_factory=SessionLocal)
             with uow:
                 assert uow.session is not None
                 assert uow.session.query(IngestionJob).count() == 2
+                assert {
+                    str(job.pipeline_version)
+                    for job in uow.session.query(IngestionJob).all()
+                } == {"1.0.0", "1.1.0"}
         finally:
             app.dependency_overrides.pop(get_settings, None)
     finally:
@@ -197,7 +222,7 @@ def test_idempotency_parallel_submission(api_client, temp_db):
         # Each worker must get its own session context to correctly simulate parallel API calls
         from server import app
         from fastapi.testclient import TestClient
-        client = TestClient(app)
+        client = TestClient(app, base_url="http://localhost")
         barrier.wait()
         with open(path, "rb") as f:
             return client.post("/analyze/file", files={"file": f})
@@ -275,6 +300,7 @@ def test_idempotency_rollback_isolation(api_client, temp_db):
         os.remove(path)
 
 def setup_app_db(db_path):
+    _reset_test_rate_limiter()
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
     from agent.persistence.orm_models import Base
@@ -291,7 +317,7 @@ def setup_app_db(db_path):
         yield uow
         
     app.dependency_overrides[__import__('agent.api.deps', fromlist=['get_uow']).get_uow] = override_get_uow
-    return engine, SessionLocal, TestClient(app)
+    return engine, SessionLocal, TestClient(app, base_url="http://localhost")
 
 def test_idempotency_sqlite_reload_and_equality():
     fd, db_path = tempfile.mkstemp(suffix=".db")

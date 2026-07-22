@@ -42,6 +42,7 @@ from agent.application.cancellation import (
 from agent.application.stateful_correlation_service import (
     StatefulIncidentCorrelationService,
     StatefulResolveResult,
+    reconcile_existing_incident,
 )
 from agent.application.stateful_pipeline import (
     HydratedCanonicalIncident,
@@ -192,9 +193,15 @@ class AnalysisService:
         self,
         uow: Optional[Any] = None,
         cancellation_checker: Optional[JobCancellationChecker] = None,
+        llm_enabled: Optional[bool] = None,
     ):
+        if llm_enabled is None:
+            from agent.config import get_settings
+
+            llm_enabled = get_settings().llm_enabled
         self.uow = uow
         self.cancellation_checker = cancellation_checker
+        self.llm_enabled = llm_enabled
         self.ingest = IngestionPipeline()
         self.filter_engine = EventFilter()
         self.detection_engine = DetectionEngine()
@@ -261,6 +268,7 @@ class AnalysisService:
                 job.events.append(orm_event)
                 persisted_events.append(orm_event)
             else:
+                DataMapper.reconcile_existing_event(existing_event, orm_event)
                 if existing_event not in job.events:
                     job.events.append(existing_event)
                 persisted_events.append(existing_event)
@@ -283,6 +291,7 @@ class AnalysisService:
                 persisted_signals.append(orm_signal)
                 signal_row_by_id[str(orm_signal.signal_id)] = orm_signal
             else:
+                DataMapper.reconcile_existing_signal(existing_signal, orm_signal)
                 if existing_signal not in job.signals:
                     job.signals.append(existing_signal)
                 persisted_signals.append(existing_signal)
@@ -322,6 +331,11 @@ class AnalysisService:
         # migration); stash it in the existing token_usage JSON column,
         # which is otherwise unused here.
         token_usage = {"policy_adjustments": inc_state.get("policy_adjustments", [])}
+        provider_unavailable = bool(
+            route == "individual_triage"
+            and not llm_invoked
+            and inc_state.get("review_reason") == "provider_unavailable"
+        )
         if llm_invoked:
             new_status = "triaged" if verdict else "needs_review"
             run = TriageRun(
@@ -334,6 +348,22 @@ class AnalysisService:
                 incident_type=inc_state.get("incident_type"),
                 iteration_count=inc_state.get("iteration_count", 0),
                 status="completed" if verdict else "failed",
+                token_usage=token_usage,
+            )
+        elif provider_unavailable:
+            new_status = "needs_review"
+            verdict = verdict or "needs_review"
+            run = TriageRun(
+                triage_run_id=str(uuid.uuid4()),
+                job_id=job.id,
+                incident_id=incident_id,
+                verdict=verdict,
+                severity=inc_state.get("severity"),
+                confidence_score=inc_state.get("confidence_score"),
+                incident_type=inc_state.get("incident_type"),
+                review_reason="provider_unavailable",
+                iteration_count=0,
+                status="failed",
                 token_usage=token_usage,
             )
         else:
@@ -361,7 +391,13 @@ class AnalysisService:
             IncidentLifecycle.transition(
                 triage_incident,
                 new_status,
-                actor_type="triage_agent" if llm_invoked else "deterministic_triage",
+                actor_type=(
+                    "triage_agent"
+                    if llm_invoked
+                    else "triage_system"
+                    if provider_unavailable
+                    else "deterministic_triage"
+                ),
                 actor_id="system",
                 details={"verdict": verdict, "route": route},
             )
@@ -438,10 +474,17 @@ class AnalysisService:
                     IncidentLifecycle.transition(orm_inc, "new", actor="detection_engine")
                     persisted_incidents.append(orm_inc)
                 else:
-                    if existing not in job.incidents:
-                        job.incidents.append(existing)
-                        # job_ids is part of the incident projection, so the existing
-                        # optimistic version is also the projection version source.
+                    changed = reconcile_existing_incident(
+                        existing,
+                        bundle=inc,
+                        job=job,
+                        max_context_events=(
+                            self.detection_engine.settings.MAX_CONTEXT_EVENTS_PER_INCIDENT
+                        ),
+                    )
+                    if changed:
+                        # One optimistic/projection version increment for the
+                        # complete scalar + association reconciliation.
                         existing.version = max(1, int(existing.version or 1)) + 1
                     persisted_incidents.append(existing)
 
@@ -525,8 +568,15 @@ class AnalysisService:
             job.incidents.append(orm_inc)
             IncidentLifecycle.transition(orm_inc, "new", actor="detection_engine")
             return orm_inc
-        if existing not in job.incidents:
-            job.incidents.append(existing)
+        changed = reconcile_existing_incident(
+            existing,
+            bundle=bundle,
+            job=job,
+            max_context_events=(
+                self.detection_engine.settings.MAX_CONTEXT_EVENTS_PER_INCIDENT
+            ),
+        )
+        if changed:
             existing.version = max(1, int(existing.version or 1)) + 1
         return existing
 
@@ -649,7 +699,11 @@ class AnalysisService:
         }
 
     def _process_events_stateful(
-        self, result: AnalysisResult, run_triage: bool, job_id: Optional[str]
+        self,
+        result: AnalysisResult,
+        run_triage: bool,
+        job_id: Optional[str],
+        stateful_correlation_enabled: Optional[bool] = None,
     ) -> AnalysisResult:
         det_result = result.detection_result
         assert det_result is not None
@@ -703,6 +757,7 @@ class AnalysisService:
                         job=job,
                         settings=settings,
                         detection_settings=det_settings,
+                        enabled=stateful_correlation_enabled,
                     )
                     self._raise_if_cancelled(job_id)
                     self._account_stateful_status(r.status, stateful_metrics)
@@ -755,6 +810,22 @@ class AnalysisService:
                     self._raise_if_cancelled(job_id)
                     final_resolve = combined_by_final_id.get(final_id)
                     row_event_ids = {str(e.event_id) for e in row.events}
+                    primary_event_ids = {
+                        str(event.event_id)
+                        for event in row.events
+                        if not event.is_context
+                    }
+                    current_primary_event_ids = (
+                        primary_event_ids & current_job_event_ids
+                    )
+                    row.metrics = {  # type: ignore[assignment]
+                        **dict(row.metrics or {}),
+                        "contributing_job_count": len(row.jobs),
+                        "current_job_event_count": len(current_primary_event_ids),
+                        "prior_job_event_count": len(
+                            primary_event_ids - current_job_event_ids
+                        ),
+                    }
                     row_signal_ids = {str(s.signal_id) for s in row.signals}
                     hydrated = hydrate_canonical_incident(
                         uow,
@@ -890,6 +961,21 @@ class AnalysisService:
 
         if decision.route == "individual_triage":
             routing_metrics["individual_triage_count"] += 1
+            if not self.llm_enabled:
+                initial_state["llm_invoked"] = False
+                initial_state["triage_verdict"] = "needs_review"
+                initial_state["review_reason"] = "provider_unavailable"
+                initial_state["incident_type"] = bundle.incident_type
+                initial_state["severity"] = "none"
+                initial_state["confidence_score"] = 0.0
+                self._persist_triage_outputs(
+                    uow,
+                    job,
+                    initial_state,
+                    row,
+                    allow_lifecycle_transition=allow_transition,
+                )
+                return initial_state
             routing_metrics["provider_invocation_count"] += 1
             try:
                 self._raise_if_cancelled(job_id)
@@ -951,7 +1037,7 @@ class AnalysisService:
 
         return initial_state
 
-    def analyze_file(self, file_path: str, *, run_triage: bool = True, source_name: Optional[str] = None, file_sha256: Optional[str] = None, idempotency_key: Optional[str] = None, pipeline_version: Optional[str] = None, analysis_mode: Optional[str] = None, job_id: Optional[str] = None) -> AnalysisResult:
+    def analyze_file(self, file_path: str, *, run_triage: bool = True, source_name: Optional[str] = None, file_sha256: Optional[str] = None, idempotency_key: Optional[str] = None, pipeline_version: Optional[str] = None, analysis_mode: Optional[str] = None, job_id: Optional[str] = None, stateful_correlation_enabled: Optional[bool] = None) -> AnalysisResult:
         # 1. Check Idempotency if key is provided and job_id is NOT provided
         from agent.persistence.orm_models import IngestionJob
         import uuid
@@ -1180,7 +1266,8 @@ class AnalysisService:
             file_sha256=file_sha256,
             idempotency_key=idempotency_key,
             pipeline_version=pipeline_version,
-            analysis_mode=analysis_mode
+            analysis_mode=analysis_mode,
+            stateful_correlation_enabled=stateful_correlation_enabled,
         )
         return res
 
@@ -1193,7 +1280,7 @@ class AnalysisService:
             job_id=None
         )
 
-    def _process_events(self, events: List[CanonicalLogEvent], run_triage: bool, ingestion_result: Any, source_name: str, job_id: Optional[str] = None, file_sha256: Optional[str] = None, idempotency_key: Optional[str] = None, pipeline_version: Optional[str] = None, analysis_mode: Optional[str] = None) -> AnalysisResult:
+    def _process_events(self, events: List[CanonicalLogEvent], run_triage: bool, ingestion_result: Any, source_name: str, job_id: Optional[str] = None, file_sha256: Optional[str] = None, idempotency_key: Optional[str] = None, pipeline_version: Optional[str] = None, analysis_mode: Optional[str] = None, stateful_correlation_enabled: Optional[bool] = None) -> AnalysisResult:
         # 2. Filtering
         filter_result = self.filter_engine.filter_events(events)
         
@@ -1229,9 +1316,17 @@ class AnalysisService:
         # no persistence backend is available.
         if (
             self.uow is not None
-            and cast(UnitOfWork, self.uow).settings.stateful_correlation_enabled
+            and (
+                cast(UnitOfWork, self.uow).settings.stateful_correlation_enabled
+                or stateful_correlation_enabled is True
+            )
         ):
-            return self._process_events_stateful(result, run_triage, job_id)
+            return self._process_events_stateful(
+                result,
+                run_triage,
+                job_id,
+                stateful_correlation_enabled=stateful_correlation_enabled,
+            )
 
         # 4. Persistence setup (Optional Phase 5 integration point)
         # If we have a Unit Of Work, we can persist the canonical events, signals, and incidents here.
@@ -1262,6 +1357,15 @@ class AnalysisService:
 
             if decision.route == "individual_triage":
                 routing_metrics["individual_triage_count"] += 1
+                if not self.llm_enabled:
+                    initial_state["llm_invoked"] = False
+                    initial_state["triage_verdict"] = "needs_review"
+                    initial_state["review_reason"] = "provider_unavailable"
+                    initial_state["incident_type"] = inc.incident_type
+                    initial_state["severity"] = "none"
+                    initial_state["confidence_score"] = 0.0
+                    result.incidents.append(initial_state)
+                    continue
                 routing_metrics["provider_invocation_count"] += 1
                 try:
                     self._raise_if_cancelled(job_id)

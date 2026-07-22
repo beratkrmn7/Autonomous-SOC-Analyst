@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any, Dict, Union
 
 from agent.parsers.base import BaseLogParser, ParseContext, ParserMatch
@@ -32,6 +33,25 @@ def _is_explicit_spi_event(raw_record: Dict[str, Any]) -> bool:
         str(raw_record.get(field, "")).strip().casefold() == "spi"
         for field in ("deviceInboundRuleSet", "deviceOutboundRuleSet")
     )
+
+
+def _source_timezone_offset(value: Any) -> str | None:
+    """Return a validated fixed UTC offset without retaining the raw timestamp."""
+    text = _bounded_text(value, MAX_METADATA_TEXT_CHARS)
+    if text is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    offset = parsed.utcoffset()
+    if offset is None:
+        return None
+    total_minutes = int(offset.total_seconds() // 60)
+    sign = "+" if total_minutes >= 0 else "-"
+    absolute_minutes = abs(total_minutes)
+    hours, minutes = divmod(absolute_minutes, 60)
+    return f"{sign}{hours:02d}:{minutes:02d}"
 
 
 class PfFirewallParser(BaseLogParser):
@@ -105,6 +125,9 @@ class PfFirewallParser(BaseLogParser):
             "tcp_flag_tokens": list(normalized_tcp_flags.tokens),
             "tcp_flags_explicit_none": normalized_tcp_flags.explicit_none,
         }
+        source_timezone_offset = _source_timezone_offset(ts_str)
+        if source_timezone_offset is not None:
+            parser_metadata["source_timezone_offset"] = source_timezone_offset
         if pf_event_type is not None:
             parser_metadata["pf_event_type"] = pf_event_type
 

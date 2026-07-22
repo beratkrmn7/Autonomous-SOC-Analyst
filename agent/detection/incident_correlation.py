@@ -15,7 +15,7 @@ signals and events. Nothing calls a provider or mutates its inputs.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 
 from agent.detection.config import DetectionSettings
@@ -26,11 +26,16 @@ from agent.detection.models import (
     IncidentBundle,
     generate_incident_id,
 )
-from agent.detection.scoring import calculate_incident_confidence, calculate_incident_severity
+from agent.detection.scoring import (
+    calculate_incident_confidence,
+    calculate_incident_severity,
+    derive_incident_severity_facts,
+)
 from agent.schema import CanonicalLogEvent
 
 
 MAX_INCIDENT_EVIDENCE = 10
+_ASSET_PRIMARY_FAMILIES = frozenset({"firewall_exposure", "firewall_policy"})
 
 # Level 1: a sequence that progressed from blocks/scanning to an allowed
 # connection. Highest priority - this is the strongest evidence available.
@@ -411,15 +416,23 @@ def build_correlated_incident(
 
     evidence = _collect_evidence(cluster, all_event_ids)
 
-    severity = calculate_incident_severity(list(cluster), anchor.primary_entity, settings)
+    incident_events = [event_lookup[event_id] for event_id in event_ids if event_id in event_lookup]
+    severity_facts = derive_incident_severity_facts(
+        incident_events, family=anchor.signal_family
+    )
+    severity = calculate_incident_severity(
+        list(cluster), anchor.primary_entity, settings, facts=severity_facts
+    )
     confidence = calculate_incident_confidence(list(cluster))
 
+    primary_entity = incident_primary_entity(anchor, event_lookup)
+    title_source = incident_title_source(anchor, event_lookup)
     bucket = int(anchor.first_seen.timestamp()) // settings.INCIDENT_MERGE_WINDOW_SECONDS
     merge_key = f"v2:{anchor.rule_id}:{anchor.signal_id}:{bucket}"
     incident_id = generate_incident_id(
         anchor.signal_family,
         anchor.signal_type,
-        anchor.primary_entity,
+        primary_entity,
         merge_key,
         anchor.first_seen,
     )
@@ -435,18 +448,19 @@ def build_correlated_incident(
         "absorbed_signal_count": len(absorbed_signal_ids),
         "primary_signal_id": anchor.signal_id,
         "correlation_version": "2",
+        **severity_facts.as_metrics(),
     }
 
     return IncidentBundle(
         incident_id=incident_id,
         incident_type=anchor.signal_type,
         incident_family=anchor.signal_family,
-        title=f"Detected {anchor.rule_name} from {anchor.primary_entity}",
+        title=f"Detected {anchor.rule_name} from {title_source}",
         severity=severity,
         confidence=confidence,
         first_seen=first_seen,
         last_seen=last_seen,
-        primary_entity=anchor.primary_entity,
+        primary_entity=primary_entity,
         target_entities=sorted(target_entities),
         signal_ids=signal_ids,
         event_ids=event_ids,
@@ -480,6 +494,204 @@ def _collect_evidence(
             evidence.append(item)
             seen_event_ids.add(item.event_id)
     return evidence
+
+
+def _incident_windows_overlap_or_touch(
+    left: IncidentBundle, right: IncidentBundle
+) -> bool:
+    return left.first_seen <= right.last_seen and right.first_seen <= left.last_seen
+
+
+def _incident_event_sets_overlap(
+    left: IncidentBundle, right: IncidentBundle
+) -> bool:
+    left_ids = set(left.event_ids)
+    right_ids = set(right.event_ids)
+    if not left_ids or not right_ids:
+        return False
+    if left_ids <= right_ids or right_ids <= left_ids:
+        return True
+    return len(left_ids & right_ids) / len(left_ids | right_ids) >= 0.5
+
+
+def _overlapping_incidents_are_mergeable(
+    left: IncidentBundle, right: IncidentBundle
+) -> bool:
+    return bool(
+        left.incident_type == right.incident_type
+        and left.primary_entity == right.primary_entity
+        and _incident_windows_overlap_or_touch(left, right)
+        and _incident_event_sets_overlap(left, right)
+    )
+
+
+def incident_title_source(
+    signal: DetectionSignal,
+    event_lookup: Mapping[str, CanonicalLogEvent] | None = None,
+) -> str:
+    """Return a deterministic observed source for an incident title."""
+    if event_lookup:
+        source_ips = sorted(
+            {
+                event.src_ip
+                for event_id in signal.event_ids
+                if (event := event_lookup.get(event_id)) is not None and event.src_ip
+            }
+        )
+        if source_ips:
+            return source_ips[0]
+    source_metrics = str(
+        signal.metrics.get("source_ips") or signal.metrics.get("source_ip") or ""
+    )
+    metric_sources = sorted(
+        {value.strip() for value in source_metrics.split(",") if value.strip()}
+    )
+    if metric_sources:
+        return metric_sources[0]
+    return signal.primary_entity
+
+
+def incident_primary_entity(
+    signal: DetectionSignal,
+    event_lookup: Mapping[str, CanonicalLogEvent] | None = None,
+) -> str:
+    """Normalize incident ownership without changing the producing signal."""
+    if signal.signal_family not in _ASSET_PRIMARY_FAMILIES or not event_lookup:
+        return signal.primary_entity
+    destinations = sorted(
+        {
+            destination
+            for event_id in signal.event_ids
+            if (event := event_lookup.get(event_id)) is not None
+            if (destination := (event.translated_dst_ip or event.dst_ip))
+        }
+    )
+    return destinations[0] if destinations else signal.primary_entity
+
+
+def _incident_keeper_key(
+    incident: IncidentBundle,
+) -> tuple[int, datetime, str]:
+    return (-len(incident.event_ids), incident.first_seen, incident.incident_id)
+
+
+def _merge_incident_pair(
+    keeper: IncidentBundle,
+    absorbed: IncidentBundle,
+    signal_lookup: dict[str, DetectionSignal],
+    settings: DetectionSettings,
+    event_lookup: dict[str, CanonicalLogEvent] | None = None,
+) -> IncidentBundle:
+    event_ids = sorted(set(keeper.event_ids) | set(absorbed.event_ids))
+    event_id_set = set(event_ids)
+    signal_ids = sorted(set(keeper.signal_ids) | set(absorbed.signal_ids))
+    signals = [signal_lookup[signal_id] for signal_id in signal_ids]
+
+    primary_signal_id = keeper.metrics.get("primary_signal_id")
+    absorbed_signal_ids = sorted(
+        (
+            set(keeper.absorbed_signal_ids)
+            | set(absorbed.signal_ids)
+            | set(absorbed.absorbed_signal_ids)
+        )
+        - ({primary_signal_id} if isinstance(primary_signal_id, str) else set())
+    )
+
+    evidence: list[DetectionEvidence] = []
+    seen_evidence: set[tuple[str, str, str, str]] = set()
+    for item in [*keeper.evidence, *absorbed.evidence]:
+        key = (item.event_id, item.source, item.reason, item.quote)
+        if item.event_id not in event_id_set or key in seen_evidence:
+            continue
+        evidence.append(item)
+        seen_evidence.add(key)
+        if len(evidence) >= MAX_INCIDENT_EVIDENCE:
+            break
+
+    target_entities = sorted(
+        set(keeper.target_entities) | set(absorbed.target_entities)
+    )
+    metrics = dict(keeper.metrics)
+    metrics.update(
+        {
+            "total_events": len(event_ids),
+            "distinct_targets": len(target_entities),
+            "correlated_signal_count": len(signal_ids),
+            "absorbed_signal_count": len(absorbed_signal_ids),
+            "overlapping_incident_merge_count": int(
+                metrics.get("overlapping_incident_merge_count", 0)
+            )
+            + 1
+            + int(absorbed.metrics.get("overlapping_incident_merge_count", 0)),
+        }
+    )
+    severity_facts = None
+    if event_lookup is not None:
+        severity_facts = derive_incident_severity_facts(
+            [event_lookup[event_id] for event_id in event_ids if event_id in event_lookup],
+            family=keeper.incident_family,
+        )
+        metrics.update(severity_facts.as_metrics())
+
+    return keeper.model_copy(
+        update={
+            "severity": calculate_incident_severity(
+                signals, keeper.primary_entity, settings, facts=severity_facts
+            ),
+            "confidence": calculate_incident_confidence(signals),
+            "first_seen": min(keeper.first_seen, absorbed.first_seen),
+            "last_seen": max(keeper.last_seen, absorbed.last_seen),
+            "target_entities": target_entities,
+            "signal_ids": signal_ids,
+            "event_ids": event_ids,
+            "context_event_ids": sorted(
+                (set(keeper.context_event_ids) | set(absorbed.context_event_ids))
+                - event_id_set
+            )[: settings.MAX_CONTEXT_EVENTS_PER_INCIDENT],
+            "evidence": evidence,
+            "metrics": metrics,
+            "mitre_techniques": sorted(
+                set(keeper.mitre_techniques) | set(absorbed.mitre_techniques)
+            ),
+            "absorbed_signal_ids": absorbed_signal_ids,
+        }
+    )
+
+
+def merge_overlapping_incidents(
+    incidents: Sequence[IncidentBundle],
+    signals: Sequence[DetectionSignal],
+    settings: DetectionSettings,
+    event_lookup: dict[str, CanonicalLogEvent] | None = None,
+) -> tuple[list[IncidentBundle], int]:
+    """Merge nested/high-overlap duplicate incidents deterministically.
+
+    This is a presentation-independent, provider-free post-pass over already
+    detected signals and incidents. The largest event set is always the
+    canonical keeper; ties use first_seen and then incident_id.
+    """
+    signal_lookup = {signal.signal_id: signal for signal in signals}
+    merged: list[IncidentBundle] = []
+    absorbed_count = 0
+
+    for candidate in sorted(incidents, key=_incident_keeper_key):
+        eligible = [
+            incident
+            for incident in merged
+            if _overlapping_incidents_are_mergeable(incident, candidate)
+        ]
+        if not eligible:
+            merged.append(candidate)
+            continue
+
+        keeper = min(eligible, key=_incident_keeper_key)
+        merged[merged.index(keeper)] = _merge_incident_pair(
+            keeper, candidate, signal_lookup, settings, event_lookup
+        )
+        absorbed_count += 1
+
+    merged.sort(key=lambda incident: (incident.first_seen, incident.incident_id))
+    return merged, absorbed_count
 
 
 def build_correlated_incidents(
@@ -519,5 +731,7 @@ def build_correlated_incidents(
         build_correlated_incident(cluster, event_lookup, sorted_context_events, settings)
         for cluster in clusters
     ]
-    incidents.sort(key=lambda incident: (incident.first_seen, incident.incident_id))
-    return incidents, merge_count
+    incidents, overlapping_merge_count = merge_overlapping_incidents(
+        incidents, signals, settings, event_lookup
+    )
+    return incidents, merge_count + overlapping_merge_count

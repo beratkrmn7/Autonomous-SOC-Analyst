@@ -46,6 +46,15 @@ class DetectionSignal(BaseModel):
         return sorted(set(v))
 
 class IncidentBundle(BaseModel):
+    """Canonical correlated incident.
+
+    ``primary_entity`` is the effective destination asset for
+    ``firewall_exposure``/``firewall_policy`` incidents and the observed
+    source for scanning/probing incidents. Other families retain their
+    deterministic rule-defined entity. Titles independently identify the
+    observed source and must never infer an attacker from the primary entity.
+    """
+
     incident_id: str = Field(min_length=1)
     incident_type: str
     incident_family: str

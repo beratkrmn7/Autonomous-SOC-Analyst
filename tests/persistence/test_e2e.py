@@ -12,6 +12,7 @@ from server import app
 from agent.config import get_settings
 from agent.api.deps import get_uow
 from agent.persistence.unit_of_work import UnitOfWork
+from agent.persistence.lifecycle import IncidentLifecycle
 from agent.persistence.orm_models import Incident
 
 def setup_test_db(db_path: str):
@@ -98,19 +99,42 @@ def test_api_to_db_flow_and_durability(isolated_db):
         assert res.status_code == 409
         assert res.json()["detail"]["code"] == "incident_version_conflict"
 
-        # Test invalid transition -> 409
-        # Assuming current version is 2 because triage was run, fetch to be sure
-        res_get = client.get(f"/api/v1/incidents/{incident_id}")
-        res_get.json().get("version", 2)  # Wait, IncidentResponse doesn't have version yet, let's just use 2
-        
-        # Actually IncidentResponse doesn't return version. We know it's 2 after triage.
-        res = client.patch(f"/api/v1/incidents/{incident_id}/status", json={"status": "invalid_status", "expected_version": 2})
+        # Test invalid transition against the persisted optimistic version.
+        # Low-severity blocked reconnaissance is intentionally routed to a
+        # provider-free digest, so it remains version 1; incidents that were
+        # triaged may already be version 2 or later.
+        with SessionLocal() as session:
+            persisted_incident = session.get(Incident, incident_id)
+            assert persisted_incident is not None
+            current_version = persisted_incident.version
+            current_status = str(persisted_incident.status)
+
+        valid_statuses = IncidentLifecycle.VALID_TRANSITIONS[current_status]
+        target_status = (
+            "investigating"
+            if "investigating" in valid_statuses
+            else valid_statuses[0]
+        )
+
+        res = client.patch(
+            f"/api/v1/incidents/{incident_id}/status",
+            json={
+                "status": "invalid_status",
+                "expected_version": current_version,
+            },
+        )
         assert res.status_code == 409
         assert res.json()["detail"]["code"] == "invalid_incident_transition"
-        
-        res = client.patch(f"/api/v1/incidents/{incident_id}/status", json={"status": "investigating", "expected_version": 2})
+
+        res = client.patch(
+            f"/api/v1/incidents/{incident_id}/status",
+            json={
+                "status": target_status,
+                "expected_version": current_version,
+            },
+        )
         assert res.status_code == 200
-        assert res.json()["version"] == 3
+        assert res.json()["version"] == current_version + 1
     
     os.remove(tf_name)
     
@@ -121,7 +145,7 @@ def test_api_to_db_flow_and_durability(isolated_db):
     with NewSessionLocal() as session:
         orm_inc = session.query(Incident).filter(Incident.incident_id == incident_id).first()
         assert orm_inc is not None
-        assert orm_inc.status == "investigating"
+        assert orm_inc.status == target_status
         
         # Verify Sentinel Secret is NOT in canonical events
         from agent.persistence.orm_models import CanonicalEvent
@@ -139,11 +163,13 @@ def test_api_to_db_flow_and_durability(isolated_db):
     with TestClient(app) as client:
         res = client.get(f"/api/v1/incidents/{incident_id}")
         assert res.status_code == 200
-        assert res.json()["status"] == "investigating"
+        assert res.json()["status"] == target_status
         
         res = client.get(f"/api/v1/incidents/{incident_id}/report")
-        assert res.status_code == 200
-        assert "incident_id" in res.json()
+        # Fully blocked low-severity reconnaissance is routed to the
+        # deterministic digest and must not create a provider-backed report.
+        assert res.status_code == 404
+        assert res.json()["detail"] == "Report not generated yet"
         
     new_engine.dispose()
 

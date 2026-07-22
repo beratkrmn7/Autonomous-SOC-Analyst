@@ -16,10 +16,16 @@ from typing import Optional, Sequence
 from agent.detection.config import DetectionSettings
 from agent.detection.incident_correlation import (
     MAX_INCIDENT_EVIDENCE,
+    incident_title_source,
     signal_precedence_key,
 )
 from agent.detection.models import DetectionEvidence, DetectionSignal, IncidentBundle
-from agent.detection.scoring import calculate_incident_confidence, calculate_incident_severity
+from agent.detection.scoring import (
+    calculate_incident_confidence,
+    calculate_incident_severity,
+    derive_incident_severity_facts,
+)
+from agent.schema import CanonicalLogEvent
 
 
 _SEVERITY_RANK: dict[str, int] = {
@@ -128,6 +134,7 @@ def merge_incident_bundles(
     available_signals: Optional[Sequence[DetectionSignal]],
     settings: DetectionSettings,
     max_context_events: int,
+    final_events: Optional[Sequence[CanonicalLogEvent]] = None,
 ) -> IncidentMergeOutcome:
     """Merge `incoming` into `canonical`, preserving canonical's incident_id.
 
@@ -155,7 +162,8 @@ def merge_incident_bundles(
     last_seen = max(canonical.last_seen, incoming.last_seen)
     evidence = _merge_evidence(canonical.evidence, incoming.evidence, event_id_set)
 
-    anchor, scoring_recalculated = _select_anchor(canonical, incoming, available_signals)
+    anchor, signals_complete = _select_anchor(canonical, incoming, available_signals)
+    scoring_recalculated = False
 
     identity_promoted = False
     incident_type = canonical.incident_type
@@ -169,25 +177,45 @@ def merge_incident_bundles(
     severity = canonical.severity
     confidence = canonical.confidence
 
+    severity_facts = None
     if anchor is not None:
         primary_signal_id = anchor.signal_id
+        normalized_primary_entity = anchor.primary_entity
+        if anchor.signal_family in {"firewall_exposure", "firewall_policy"}:
+            source_bundle = (
+                incoming if anchor.signal_id in incoming.signal_ids else canonical
+            )
+            normalized_primary_entity = source_bundle.primary_entity
         if (
             anchor.signal_type != canonical.incident_type
             or anchor.signal_family != canonical.incident_family
-            or anchor.primary_entity != canonical.primary_entity
+            or normalized_primary_entity != canonical.primary_entity
         ):
             identity_promoted = True
         incident_type = anchor.signal_type
         incident_family = anchor.signal_family
-        title = f"Detected {anchor.rule_name} from {anchor.primary_entity}"
-        primary_entity = anchor.primary_entity
+        title = f"Detected {anchor.rule_name} from {incident_title_source(anchor)}"
+        primary_entity = normalized_primary_entity
 
         cluster = [
             signal
             for signal in (available_signals or ())
             if signal.signal_id in signal_ids
         ]
-        severity = calculate_incident_severity(cluster, primary_entity, settings)
+        final_event_map = {
+            event.event_id: event for event in (final_events or ())
+        }
+        if signals_complete and set(final_event_map) == event_id_set:
+            severity_facts = derive_incident_severity_facts(
+                list(final_event_map.values()), family=incident_family
+            )
+            severity = calculate_incident_severity(
+                cluster, primary_entity, settings, facts=severity_facts
+            )
+            scoring_recalculated = True
+        # Missing persisted event rows make any synthetic scalar combination
+        # unsafe. Preserve the canonical severity rather than summing counts
+        # or taking a max over distinct-destination metrics.
         confidence = calculate_incident_confidence(cluster)
 
     absorbed_signal_ids = sorted(sid for sid in signal_ids if sid != primary_signal_id)
@@ -197,6 +225,8 @@ def merge_incident_bundles(
     metrics["correlated_signal_count"] = len(signal_ids)
     metrics["absorbed_signal_count"] = len(absorbed_signal_ids)
     metrics["primary_signal_id"] = primary_signal_id
+    if anchor is not None and severity_facts is not None:
+        metrics.update(severity_facts.as_metrics())
 
     merged = IncidentBundle(
         incident_id=canonical.incident_id,

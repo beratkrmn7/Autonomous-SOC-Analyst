@@ -4,6 +4,7 @@ the per-job provider-call contract holds for every route."""
 from __future__ import annotations
 
 import agent.application.analysis_service as svc_mod
+from agent.persistence.orm_models import Incident, Report, TriageRun
 from agent.triage.routing import RoutingDecision, decide_route
 
 from tests.stateful_integration.conftest import (
@@ -40,6 +41,41 @@ def test_individual_triage_calls_provider_exactly_once(
     )
     assert fake_app.calls == 1
     assert result.routing_metrics["provider_invocation_count"] == 1
+
+
+def test_disabled_llm_does_not_attempt_individual_triage_provider(
+    session_factory, fake_app, monkeypatch
+) -> None:
+    settings = make_settings(enabled=True, llm_enabled=False)
+    _force_route(monkeypatch, "individual_triage", llm=True)
+    events, signal, incident = campaign_job_a()
+
+    result = run_job(
+        session_factory,
+        settings,
+        job_id="job-disabled-provider",
+        events=events,
+        signals=[signal],
+        incidents=[incident],
+        run_triage=True,
+        llm_enabled=False,
+    )
+
+    assert fake_app.calls == 0
+    assert result.routing_metrics["individual_triage_count"] == 1
+    assert result.routing_metrics["provider_invocation_count"] == 0
+    assert result.incidents[0]["triage_verdict"] == "needs_review"
+    assert result.incidents[0]["llm_invoked"] is False
+    assert result.incidents[0]["incident_type"] == incident.incident_type
+
+    with session_factory() as session:
+        persisted_incident = session.get(Incident, "INC-A")
+        assert persisted_incident is not None
+        assert persisted_incident.status == "needs_review"
+        triage_run = session.query(TriageRun).filter_by(incident_id="INC-A").one()
+        assert triage_run.status == "failed"
+        assert triage_run.review_reason == "provider_unavailable"
+        assert session.query(Report).filter_by(incident_id="INC-A").count() == 0
 
 
 def test_deterministic_report_route_makes_zero_provider_calls(

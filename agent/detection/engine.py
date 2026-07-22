@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import List, Optional, Set
 import logging
 from collections import defaultdict
+from types import MappingProxyType
 
 from agent.schema import CanonicalLogEvent
 from agent.detection.models import (
@@ -147,8 +148,13 @@ class DetectionEngine:
         # 3. Suppression
         active_signals = []
         suppressed_signals = []
+        suppression_event_lookup = MappingProxyType(
+            {event.event_id: event for event in eligible_events}
+        )
         for sig in all_signals:
-            suppression_reason = self.suppression_policy.is_suppressed(sig)
+            suppression_reason = self.suppression_policy.is_suppressed(
+                sig, suppression_event_lookup
+            )
             if suppression_reason:
                 sig.suppressed = True
                 sig.suppression_reason = suppression_reason

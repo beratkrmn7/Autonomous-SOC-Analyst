@@ -653,6 +653,7 @@ def reporter_node(state: IncidentState) -> dict:
 
     deterministic_facts = None
     deterministic_confidence = None
+    context = None
     incident_dict = state.get("incident")
     if incident_dict:
         try:
@@ -692,8 +693,13 @@ def reporter_node(state: IncidentState) -> dict:
     rej_ev = [EvidenceValidationResult(**e) for e in state.get("rejected_evidence", [])]
     claims = [TriageClaim(**c) for c in state.get("validated_claims", [])]
 
+    incident_metrics = {}
+    if context is not None:
+        incident_metrics = context.incident.metrics
     metadata = {
-        "title": f"Incident {state['incident_id']} ({state.get('incident_type', 'unknown')})"
+        "title": f"Incident {state['incident_id']} ({state.get('incident_type', 'unknown')})",
+        "event_count": len(context.incident.event_ids) if context is not None else 0,
+        "incident_metrics": incident_metrics,
     }
 
     report = generate_report(

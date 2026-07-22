@@ -358,7 +358,7 @@ async def detect_file(
             file_sha256, settings.pipeline_version, analysis_mode
         )
         
-        svc = AnalysisService(uow=uow)
+        svc = AnalysisService(uow=uow, llm_enabled=settings.llm_enabled)
         try:
             result = svc.analyze_file(
                 temp_path, 
@@ -464,7 +464,7 @@ async def analyze_file(
             file_sha256, settings.pipeline_version, analysis_mode
         )
         
-        svc = AnalysisService(uow=uow)
+        svc = AnalysisService(uow=uow, llm_enabled=settings.llm_enabled)
         try:
             result = svc.analyze_file(
                 temp_path, 

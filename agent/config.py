@@ -245,7 +245,7 @@ class Settings(BaseSettings):
     ollama_keep_alive: str = Field(default="5m", min_length=1, max_length=32)
     ollama_triage_timeout_seconds: int = Field(default=300, gt=0)
     
-    pipeline_version: str = "1.0.0"
+    pipeline_version: str = "1.1.0"
 
     llm_parser_fallback_enabled: bool = False
 
@@ -294,12 +294,11 @@ class Settings(BaseSettings):
     worker_heartbeat_interval_seconds: int = Field(default=15, ge=1)
     worker_heartbeat_stale_seconds: int = Field(default=60, ge=1)
 
-    # Phase 6E.4A: persistent cross-job correlation foundation (disabled by
-    # default). This settings block only controls the standalone foundation
-    # introduced in this phase - it is not read by AnalysisService yet.
+    # Persistent cross-job correlation remains opt-in. The version is part
+    # of the correlation key so semantic upgrades cannot absorb older state.
     stateful_correlation_enabled: bool = False
     stateful_correlation_version: str = Field(
-        default="1", min_length=1, max_length=16, pattern=r"^[A-Za-z0-9._-]+$"
+        default="2", min_length=1, max_length=16, pattern=r"^[A-Za-z0-9._-]+$"
     )
     stateful_correlation_window_seconds: int = Field(default=3600, gt=0, le=2_592_000)
     stateful_correlation_state_ttl_seconds: int = Field(

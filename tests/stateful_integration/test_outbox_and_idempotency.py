@@ -101,7 +101,8 @@ def test_whole_job_replay_creates_no_new_writes(session_factory, fake_app, monke
 
     def build_service() -> AnalysisService:
         service = AnalysisService(
-            uow=UnitOfWork(session_factory=session_factory, settings=settings)
+            uow=UnitOfWork(session_factory=session_factory, settings=settings),
+            llm_enabled=True,
         )
         service.ingest.ingest_file = lambda path: ingestion_result  # type: ignore[assignment]
         from agent.detection.models import (

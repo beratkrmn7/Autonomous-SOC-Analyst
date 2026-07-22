@@ -170,6 +170,8 @@ def run_job(
     run_triage: bool,
     suppressed: Optional[Sequence[DetectionSignal]] = None,
     uncorrelated: Optional[Sequence[str]] = None,
+    stateful_correlation_enabled: Optional[bool] = None,
+    llm_enabled: bool = True,
 ) -> AnalysisResult:
     """Run one analysis job through the shared AnalysisService flow.
 
@@ -186,7 +188,10 @@ def run_job(
         suppressed=suppressed,
         uncorrelated=uncorrelated,
     )
-    service = AnalysisService(uow=UnitOfWork(session_factory=session_factory, settings=settings))
+    service = AnalysisService(
+        uow=UnitOfWork(session_factory=session_factory, settings=settings),
+        llm_enabled=llm_enabled,
+    )
     service.detection_engine.analyze = lambda ev, ctx: det_result  # type: ignore[assignment]
     return service._process_events(
         events=list(events),
@@ -194,6 +199,7 @@ def run_job(
         ingestion_result=None,
         source_name="firewall.json",
         job_id=job_id,
+        stateful_correlation_enabled=stateful_correlation_enabled,
     )
 
 

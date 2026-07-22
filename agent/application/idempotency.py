@@ -27,9 +27,16 @@ def compute_file_sha256(file_path: str) -> str:
 
 
 def compute_idempotency_key(
-    file_sha256: str, pipeline_version: str, analysis_mode: str
+    file_sha256: str,
+    pipeline_version: str,
+    analysis_mode: str,
+    correlation_mode: str = "configured",
 ) -> str:
     """The canonical idempotency key: sha256 of
     ``{file_sha256}:{pipeline_version}:{analysis_mode}``."""
     idemp_string = f"{file_sha256}:{pipeline_version}:{analysis_mode}"
+    # Preserve every pre-hardening key exactly. Isolation changes analysis
+    # semantics, so it receives a separate scope; presentation modes do not.
+    if correlation_mode != "configured":
+        idemp_string = f"{idemp_string}:{correlation_mode}"
     return hashlib.sha256(idemp_string.encode("utf-8")).hexdigest()

@@ -122,6 +122,13 @@ def generate_report(
     report.append(
         f"**Triage confidence score:** {_format_confidence(submission.confidence_score)}"
     )
+    from agent.triage.provenance import format_event_provenance
+
+    event_count = int(incident_metadata.get("event_count", 0) or 0)
+    incident_metrics = incident_metadata.get("incident_metrics", {})
+    provenance = format_event_provenance(event_count, incident_metrics)
+    if provenance != str(event_count):
+        report.append(f"**Events:** {provenance}")
 
     if submission.triage_verdict == TriageVerdict.NEEDS_REVIEW:
         report.append(f"**Review Reason:** {review_reason}")

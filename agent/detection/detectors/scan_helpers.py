@@ -11,12 +11,21 @@ ALLOWED_ACTIONS = frozenset({"allow", "allowed", "accept", "accepted", "pass", "
 
 SERVICE_PORTS = MappingProxyType(
     {
-        "database": (1433, 1521, 3306, 5432, 6379, 9200, 27017),
+        "database": (1433, 1521, 3306, 5432),
         "docker": (2375, 2376),
-        "ftp": (20, 21),
+        "elasticsearch": (9200,),
+        "ftp": (21,),
+        "ftp_data": (20,),
+        "ipmi": (623,),
         "kubernetes": (6443, 10250),
+        "ldap": (389,),
+        "memcached": (11211,),
+        "mongodb": (27017,),
+        "msrpc": (135,),
         "rdp": (3389,),
+        "redis": (6379,),
         "smb": (139, 445),
+        "snmp": (161,),
         "ssh": (22, 2022, 2222),
         "telnet": (23,),
         "vnc": (5900, 5901, 5902, 5903, 5904, 5905),

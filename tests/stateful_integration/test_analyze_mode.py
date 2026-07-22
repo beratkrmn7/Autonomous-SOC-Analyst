@@ -44,6 +44,15 @@ def test_analyze_mode_returns_canonical_incident_id_in_second_job(session_factor
     assert result_b.detection_result.incidents[0].incident_id == "INC-A"
 
 
+def test_deterministic_report_explains_cross_job_event_provenance(
+    session_factory,
+) -> None:
+    settings = make_settings(enabled=True)
+    result_b = _run_analyze_campaign(session_factory, settings)
+    report = result_b.incidents[0]["final_report"]
+    assert "2 (1 this run, 1 from 1 earlier job) total" in report
+
+
 def test_analyze_mode_creates_at_most_one_report_per_canonical_per_job(session_factory) -> None:
     settings = make_settings(enabled=True)
     _run_analyze_campaign(session_factory, settings)

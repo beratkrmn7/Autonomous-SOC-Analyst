@@ -1,4 +1,4 @@
-# Phase 3 Detection and Correlation Engine
+# Detection and Correlation Engine
 
 The Phase 3 Detection and Correlation engine replaces heuristic scripts with a deterministic, testable, robust, and extensible rules engine focused on generating low-false-positive `IncidentBundle` objects.
 
@@ -202,17 +202,16 @@ batch-local: it has no knowledge of, and cannot merge across, separate ingestion
 files. Two adjacent files describing the same ongoing campaign each produce their own
 independent incident under Phase 6E.2 alone.
 
-## Phase 6E.4A Persistent Cross-Job Correlation Foundation
+## Persistent Cross-Job Correlation
 
-Phase 6E.4A adds a database-backed *foundation* for recognizing that incidents from
-separate ingestion jobs belong to the same ongoing campaign, without changing anything
-about Phase 6E.2's batch-local behavior above.
+The application layer can recognize that incidents from separate ingestion jobs belong
+to the same ongoing campaign without changing Phase 6E.2's batch-local rule behavior.
 
 - **Disabled by default.** The entire feature is gated behind
-  `Settings.stateful_correlation_enabled` (default `False`). When disabled,
-  `StatefulIncidentCorrelationService.resolve_and_merge()` performs zero database writes
-  and returns immediately - it is not called anywhere in the production `AnalysisService`
-  pipeline yet.
+  `Settings.stateful_correlation_enabled` (default `False`). The production
+  `AnalysisService` invokes the resolver through that existing guard; when disabled it
+  performs no correlation-state writes. CLI `--isolated` overrides the configured mode
+  for one run and receives a distinct idempotency scope.
 - **Deterministic profile matching, never source IP alone.** `agent/correlation/stateful.py`
   derives a typed, bounded `StatefulCorrelationProfile` from an incident's own canonical
   events (never raw PF strings, parser metadata, LLM output, or report text) using one of
@@ -247,11 +246,19 @@ about Phase 6E.2's batch-local behavior above.
   one batch. Because the incident row has no evidence column, bounded historical evidence is
   reconstructed deterministically from persisted canonical events at merge time (safe
   structured fields only), so earlier jobs' evidence never vanishes across cross-file merges.
-- **No LLM involvement.** Nothing in this foundation calls a provider, reuses a previous
-  report, or decides whether an incident needs retriage. Deciding when an updated incident
-  should skip or require a fresh LLM triage pass, and reusing prior reports, is explicitly
-  deferred to Phase 6E.4B - this PR only builds and tests the deterministic persistence
-  foundation that a future integration will consume.
+- **Visible provenance.** Final incident metrics expose contributing-job count plus current
+  and prior job event counts. Reports use those metrics so persisted history is never
+  presented as if it came entirely from the current file.
+- **No extra LLM path.** Correlation itself makes no provider call. Deterministic routing
+  still sees the full final canonical incident; only `individual_triage` may invoke the
+  configured provider. Completed-job replay remains provider-free.
+
+## Real-log triage hardening
+
+The persistence, correlation, severity, suppression, rollup, and CLI invariants verified
+against representative PF logs are documented in
+[Real-log triage behavior](real-log-triage.md). These changes preserve all canonical
+incidents for persistence and APIs; rollup and brief modes are presentation-only.
 
 ## Determinism
 

@@ -28,7 +28,11 @@ optional triage stage.
 - **36 default rules:** network scanning, service probing, TCP/SPI anomalies, firewall
   exposure, and firewall policy behavior.
 - **Deterministic correlation:** stable signal and incident identities, bounded evidence,
-  suppression, and duplicate prevention.
+  overlapping-window deduplication, optional cross-job campaign continuity, and transparent
+  provenance.
+- **SOC-focused output:** a concise provider-free brief groups compatible blocked
+  reconnaissance, prioritizes actionable exposure, lists suppressed findings, and inventories
+  exposed assets without changing canonical incidents.
 - **Secure optional triage:** Groq or local Ollama provider support, bounded tools,
   evidence and claim validation, retries, circuit breaking, caching, and safe
   `needs_review` fallbacks.
@@ -49,7 +53,7 @@ flowchart LR
     C --> D["CanonicalLogEvent"]
     D --> E["DetectionEngine\n36 deterministic rules"]
     E --> F["Validated DetectionSignal"]
-    F --> G["Incident correlation\nand suppression"]
+    F --> G["Suppression and\nincident correlation"]
     G --> H["SQLAlchemy persistence\nand audit trail"]
     G --> I["Optional guarded\ntriage agent"]
     I --> H
@@ -94,9 +98,11 @@ analysis workers — shares one `AnalysisService` persistence flow, in this fixe
 7. **LLM only for actionable incidents.** Only `individual_triage` incidents reach the
    provider, at most once per unique final incident per job. The other three routes make
    zero provider calls.
-8. **Concise SOC report.** Reports stay short and evidence-bound: a firewall allow does
-   not prove access, transport activity does not prove compromise, and deterministic
-   incident identity cannot be renamed by the model.
+8. **Concise SOC report.** `--report brief` renders deterministic rollups and already
+   available report results; it does not create a second provider path. `--report full`
+   preserves the per-incident panels. A firewall allow does not prove access, transport
+   activity does not prove compromise, and deterministic incident identity cannot be
+   renamed by the model.
 9. **Persistence and API/CLI output.** Events, signals, canonical incidents, reports, and
    audit events are committed in one transaction, with final projections enqueued through
    the transactional outbox. Any unexpected failure rolls back the entire job.
@@ -106,6 +112,9 @@ Guarantees worth stating explicitly:
 - Detection is fully deterministic.
 - Ingestion and detection make **zero** LLM calls under any condition.
 - Only individual-triage incidents reach the LLM.
+- `deterministic_report`, `digest`, `store_only`, completed-job replay, and brief rendering
+  make **zero** provider calls.
+- A fresh job makes at most one provider call per unique final canonical incident.
 - Persistent cross-job correlation is controlled by a feature flag whose default is off.
 - No automated containment or firewall changes are ever performed.
 
@@ -130,8 +139,35 @@ The inbound exposure pack uses translated destination fields when present withou
 mutating the canonical event. It recognizes bounded, case-insensitive WAN/LAN/DMZ zone
 tokens, excludes ordinary ports 80 and 443, and treats an allowed event only as policy or
 exposure evidence—not proof of compromise. The narrow single-event critical management
-set is Docker plaintext daemon (2375), Redis (6379), Elasticsearch (9200), Kubelet
-(10250), and MongoDB (27017).
+set is SNMP (161), IPMI/BMC (623), Docker plaintext daemon (2375), WinRM HTTP
+(5985), Redis (6379), Elasticsearch (9200), Kubelet (10250), Memcached (11211),
+and MongoDB (27017). The broader sensitive set also covers FTP data/control, SSH,
+Telnet, MSRPC, NetBIOS/SMB, LDAP, MSSQL, MySQL, RDP, PostgreSQL, and VNC.
+
+## Incident and report semantics
+
+The canonical incident remains the source of truth. Presentation rollups never alter
+detection, persistence, routing, incident identity, or API output.
+
+- Exposure and firewall-policy incidents use the effective destination asset as
+  `primary_entity`; scan and service-probe incidents use the observed source. Titles
+  independently render `from <source IP>`.
+- Effective destination means `translated_dst_ip`/`translated_dst_port` when present,
+  otherwise the original destination. Canonical events are never overwritten.
+- Explicit NAT, translated addresses, zones, interfaces, TCP flags, action reason,
+  bounded FQDNs, traffic volume, and an allowlisted parser-metadata subset survive the
+  database round trip.
+- Fully blocked scan/probe activity is severity-capped by family-aware policy; allowed
+  sensitive or critical exposure outranks blocked reconnaissance. Severity does not claim
+  asset business criticality or successful compromise.
+- Nested or strongly overlapping incidents with the same identity are merged
+  deterministically. Evidence remains bounded and belongs to the final event set.
+- A structural late-RST SPI sequence of at least two events is suppressed only when its canonical event facts
+  satisfy the exact service-source, ephemeral-destination, reset-flag, destination, and
+  action constraints. Suppression is visible in the brief.
+- Blocked reconnaissance is grouped only when every contributing incident is blocked and
+  family, service/port scope, and time are compatible. Mixed or allowed traffic stays in
+  an actionable or investigation section; a shared `/24` alone is never sufficient.
 
 See [Detection Engine](docs/detection_engine.md) for rule contracts, thresholds, service
 sets, event eligibility, evidence requirements, and instructions for adding a rule.
@@ -251,8 +287,29 @@ correlation without invoking a provider.
 ### End-to-end analysis with optional triage
 
 ```bash
-python main.py --file data/samples/sanitized_firewall_sample.jsonl
+python main.py --file data/samples/sanitized_firewall_sample.jsonl --report brief
 ```
+
+`brief` is the default and produces a bounded SOC view: funnel, actionable items,
+investigations, compatible blocked-recon groups, suppressed findings, exposed assets,
+evidence IDs, and provider-call count. It uses source timestamps in their original offset.
+
+Use the legacy per-incident presentation when deeper detail is useful:
+
+```bash
+python main.py --file data/samples/sanitized_firewall_sample.jsonl --report full
+```
+
+To prevent an analysis from merging with previously persisted campaigns:
+
+```bash
+python main.py --file data/samples/sanitized_firewall_sample.jsonl --isolated
+```
+
+`--isolated` is part of the idempotency scope because it changes correlation behavior.
+`--report` is presentation-only and does not change the analysis key. Stateful results
+include contributing-job, current-job-event, and prior-job-event counts so cross-job
+history is explicit. Completed-job replay reuses persisted results and calls no provider.
 
 With no CLI argument, `main.py` runs the bundled mock incident demonstration. Set
 `RUN_ALL=true` to process every mock item.
@@ -313,7 +370,9 @@ The database remains the source of truth; Redis transports only job identifiers.
 ## Persistence, search, and retention
 
 - **Persistence:** SQLAlchemy models and repositories store jobs, canonical events,
-  signals, incidents, triage runs, evidence, lifecycle state, and audit events.
+  signals, incidents, triage runs, evidence, lifecycle state, and audit events. Canonical
+  network fields required by detection and triage are explicitly mapped in both directions;
+  arbitrary unbounded parser metadata is not persisted.
 - **Search:** versioned structured endpoints use bounded filters and signed cursor
   pagination over the primary database.
 - **Retention planning:** `python -m agent.maintenance.retention --dry-run` is read-only.
@@ -406,6 +465,7 @@ server.py           FastAPI application entry point
 ## Documentation map
 
 - [Detection Engine and adding rules](docs/detection_engine.md)
+- [Real-log triage behavior](docs/real-log-triage.md)
 - [Rule tuning](docs/rule_tuning.md)
 - [False-positive handling](docs/false_positive_handling.md)
 - [Adding a parser](docs/adding-a-parser.md)
@@ -430,13 +490,15 @@ server.py           FastAPI application entry point
 This repository is an engineering foundation and SOC triage proof of concept, not a
 complete SIEM or autonomous response platform.
 
-- Detection state is batch-local to one `DetectionEngine.analyze(...)` call.
-- There is no cross-file or cross-job detector state, streaming baseline, GeoIP, or
-  threat-intelligence lookup.
+- Rule evaluation remains batch-local to one `DetectionEngine.analyze(...)` call. Optional
+  persistence correlates already-built incidents across jobs; it does not give rules hidden
+  detector state.
+- There is no streaming baseline, GeoIP, or threat-intelligence lookup.
 - Allowed firewall traffic is exposure/policy evidence, not evidence of successful
   authentication, exploitation, or compromise.
-- Incident Correlation V2, Agent Handoff V2, automated remediation, and a UI are not
-  implemented.
+- Incident Correlation V2 is deterministic and implemented. Incident Correlation V2 does
+  not include fuzzy source-only grouping. Agent Handoff V2, automated remediation, and a
+  UI are not implemented.
 - OpenSearch bootstrap and transactional outbox foundations exist, but no outbox delivery
   worker is included yet.
 - Local archives are integrity protected but not encrypted; production storage and key

@@ -61,7 +61,7 @@ def _print_incident_state(inc_state: IncidentState) -> None:
     print("\n" + "="*50 + "\n")
 
 
-def _run_persistent_analysis(file_path: str, *, run_triage: bool, analysis_mode: str, source_name: str):
+def _run_persistent_analysis(file_path: str, *, run_triage: bool, analysis_mode: str, source_name: str, isolated: bool = False):
     """Run detect/analyze through the persistent AnalysisService so jobs,
     events, signals, incidents (and, in analyze mode, triage/report outputs)
     are persisted and optional stateful cross-job correlation applies. Computes
@@ -77,7 +77,13 @@ def _run_persistent_analysis(file_path: str, *, run_triage: bool, analysis_mode:
     settings = get_settings()
     pipeline_version = settings.pipeline_version
     file_sha256 = compute_file_sha256(file_path)
-    idempotency_key = compute_idempotency_key(file_sha256, pipeline_version, analysis_mode)
+    correlation_mode = "isolated" if isolated else "configured"
+    idempotency_key = compute_idempotency_key(
+        file_sha256,
+        pipeline_version,
+        analysis_mode,
+        correlation_mode,
+    )
     svc = build_persistent_analysis_service(settings)
     return svc.analyze_file(
         file_path,
@@ -87,22 +93,64 @@ def _run_persistent_analysis(file_path: str, *, run_triage: bool, analysis_mode:
         idempotency_key=idempotency_key,
         pipeline_version=pipeline_version,
         analysis_mode=analysis_mode,
+        stateful_correlation_enabled=False if isolated else None,
     )
 
 
-def analyze_file(file_path: str):
+def analyze_file(
+    file_path: str,
+    *,
+    isolated: bool = False,
+    report_mode: str = "brief",
+):
     console.print(f"[bold blue]Starting File Analysis: {file_path}[/bold blue]")
 
     result = _run_persistent_analysis(
-        file_path, run_triage=True, analysis_mode="analyze", source_name="cli"
+        file_path,
+        run_triage=True,
+        analysis_mode="analyze",
+        source_name="cli",
+        isolated=isolated,
     )
 
-    _print_analysis_summary(result)
+    if report_mode == "full":
+        _print_analysis_summary(result)
+        for inc_state in result.incidents:
+            _print_incident_state(inc_state)
+        _print_routing_summary(result)
+        return result
 
-    for inc_state in result.incidents:
-        _print_incident_state(inc_state)
+    from pathlib import Path
 
-    _print_routing_summary(result)
+    from agent.detection.rollup import build_rollup
+    from agent.triage.brief import render_soc_brief
+
+    detection_result = result.detection_result
+    if detection_result is None:
+        _print_analysis_summary(result)
+        return result
+    run_event_ids = (
+        [event.event_id for event in result.ingestion_result.events]
+        if result.ingestion_result and result.ingestion_result.events
+        else list(result.event_map)
+    )
+    rollup = build_rollup(
+        detection_result.incidents,
+        result.event_map,
+        suppressed_signals=detection_result.suppressed_signals,
+        run_event_ids=run_event_ids,
+    )
+    render_soc_brief(
+        console,
+        rollup=rollup,
+        event_lookup=result.event_map,
+        source_name=Path(file_path).name,
+        job_id=result.job_id,
+        provider_call_count=int(
+            (result.routing_metrics or {}).get("provider_invocation_count", 0)
+        ),
+    )
+    return result
 
 def _print_analysis_summary(result) -> None:
     console.print("\n[bold cyan]--- ANALYSIS SUMMARY ---[/bold cyan]")
@@ -112,12 +160,16 @@ def _print_analysis_summary(result) -> None:
     det_result = result.detection_result
     if det_result is not None:
         console.print(f"Detected signals: {det_result.metrics.signal_count}")
+        console.print(
+            f"Suppressed signals: {det_result.metrics.suppressed_signal_count}"
+        )
+        console.print(
+            f"Duplicate signals removed: {det_result.metrics.duplicate_signal_count}"
+        )
         # With stateful correlation enabled this is the final canonical count.
         console.print(f"Final incidents: {det_result.metrics.incident_count}")
-    metrics = result.routing_metrics or {}
-    report_count = (
-        metrics.get("individual_triage_count", 0)
-        + metrics.get("deterministic_report_count", 0)
+    report_count = sum(
+        1 for incident_state in result.incidents if incident_state.get("final_report")
     )
     console.print(f"Reports: {report_count}")
 
@@ -153,7 +205,9 @@ def run_mock_test():
 
         c_events = IngestionPipeline().ingest_records(raw_logs, source_name="mock_incidents").events
         
-        svc = AnalysisService()
+        from agent.config import get_settings
+
+        svc = AnalysisService(llm_enabled=get_settings().llm_enabled)
         result = svc.analyze_events(c_events, run_triage=True)
 
         for inc_state in result.incidents:
@@ -199,12 +253,16 @@ def ingest_file_only(file_path: str):
         for w in result.warnings:
             console.print(f"  - {w}")
 
-def detect_file_only(file_path: str):
+def detect_file_only(file_path: str, *, isolated: bool = False):
     console.print(f"[bold blue]Starting File Detection: {file_path}[/bold blue]")
 
     console.print("[bold blue]Running Detection Engine...[/bold blue]")
     result = _run_persistent_analysis(
-        file_path, run_triage=False, analysis_mode="detect", source_name="cli_detect"
+        file_path,
+        run_triage=False,
+        analysis_mode="detect",
+        source_name="cli_detect",
+        isolated=isolated,
     )
     det_result = result.detection_result
     
@@ -231,13 +289,28 @@ if __name__ == "__main__":
     parser.add_argument("--file", type=str, help="Path to JSONL log file to analyze end-to-end")
     parser.add_argument("--ingest-file", type=str, help="Path to file to only run ingestion and print summary")
     parser.add_argument("--detect-file", type=str, help="Path to file to only run deterministic detection and print summary")
+    parser.add_argument(
+        "--report",
+        choices=("full", "brief"),
+        default="brief",
+        help="Analyze output format (default: brief)",
+    )
+    parser.add_argument(
+        "--isolated",
+        action="store_true",
+        help="Disable cross-job correlation for this analysis",
+    )
     args = parser.parse_args()
     
     if args.detect_file:
-        detect_file_only(args.detect_file)
+        detect_file_only(args.detect_file, isolated=args.isolated)
     elif args.ingest_file:
         ingest_file_only(args.ingest_file)
     elif args.file:
-        analyze_file(args.file)
+        analyze_file(
+            args.file,
+            isolated=args.isolated,
+            report_mode=args.report,
+        )
     else:
         run_mock_test()

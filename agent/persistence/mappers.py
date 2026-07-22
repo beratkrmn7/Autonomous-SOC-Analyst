@@ -1,7 +1,13 @@
 # mypy: ignore-errors
+from datetime import timezone
+
 from agent.persistence.orm_models import (
     CanonicalEvent, DetectionSignal, Incident,
     IncidentEvent, IncidentSignal
+)
+from agent.persistence.exceptions import (
+    CanonicalEventIdentityConflictError,
+    DetectionSignalIdentityConflictError,
 )
 from agent.ingestion.models import CanonicalLogEvent
 from agent.detection.models import DetectionSignal as DomainDetectionSignal
@@ -18,6 +24,105 @@ _UNKNOWN_PRIMARY_ENTITY = "unknown"
 # IncidentBundle.metrics; read back here (not stripped - it is meant to be
 # visible) to reconstruct absorbed_signal_ids without a migration.
 _PRIMARY_SIGNAL_ID_METRICS_KEY = "primary_signal_id"
+
+_MAX_INTERFACE_CHARS = 128
+_MAX_ZONE_CHARS = 128
+_MAX_ACTION_REASON_CHARS = 256
+_MAX_NAT_TYPE_CHARS = 64
+_MAX_IP_CHARS = 64
+_MAX_TCP_FLAGS_CHARS = 64
+_MAX_FQDN_CHARS = 253
+_MAX_FQDNS = 20
+_MAX_METADATA_TEXT_CHARS = 128
+_MAX_TCP_FLAG_TOKENS = 16
+_PERSISTED_METADATA_BOOL_FIELDS = (
+    "spi_anomaly",
+    "tcp_flags_present",
+    "tcp_flags_explicit_none",
+)
+_PERSISTED_METADATA_TEXT_FIELDS = (
+    "original_device_action",
+    "original_tcp_flags",
+    "pf_event_type",
+    "source_timezone_offset",
+)
+
+
+def _bounded_optional_text(value, max_chars):
+    if value is None:
+        return None
+    normalized = " ".join(str(value).split())
+    return normalized[:max_chars] or None
+
+
+def _bounded_fqdns(values):
+    if not isinstance(values, (list, tuple)):
+        return []
+    bounded = []
+    seen = set()
+    for value in values:
+        normalized = _bounded_optional_text(value, _MAX_FQDN_CHARS)
+        if normalized is None or normalized in seen:
+            continue
+        seen.add(normalized)
+        bounded.append(normalized)
+        if len(bounded) >= _MAX_FQDNS:
+            break
+    return bounded
+
+
+def _bounded_parser_metadata(metadata):
+    """Persist only the bounded PF facts required after hydration.
+
+    Canonical parser metadata is intentionally not a general persistence
+    extension point. Unknown keys and nested values are discarded.
+    """
+    if not isinstance(metadata, dict):
+        return None
+
+    bounded = {}
+    for key in _PERSISTED_METADATA_BOOL_FIELDS:
+        value = metadata.get(key)
+        if isinstance(value, bool):
+            bounded[key] = value
+    for key in _PERSISTED_METADATA_TEXT_FIELDS:
+        value = _bounded_optional_text(metadata.get(key), _MAX_METADATA_TEXT_CHARS)
+        if value is not None:
+            bounded[key] = value
+
+    tokens = metadata.get("tcp_flag_tokens")
+    if isinstance(tokens, (list, tuple)):
+        bounded_tokens = []
+        seen_tokens = set()
+        for token in tokens:
+            normalized = _bounded_optional_text(token, 16)
+            if normalized is None or normalized in seen_tokens:
+                continue
+            seen_tokens.add(normalized)
+            bounded_tokens.append(normalized)
+            if len(bounded_tokens) >= _MAX_TCP_FLAG_TOKENS:
+                break
+        bounded["tcp_flag_tokens"] = bounded_tokens
+
+    return bounded or None
+
+
+def _normalized_datetime(value):
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _identity_values_conflict(existing, incoming, field):
+    left = getattr(existing, field)
+    right = getattr(incoming, field)
+    if left is None or right is None:
+        return False
+    if field == "timestamp":
+        return _normalized_datetime(left) != _normalized_datetime(right)
+    return left != right
 
 
 class DataMapper:
@@ -39,6 +144,33 @@ class DataMapper:
             dst_port=event.dst_port,
             protocol=event.protocol,
             action=event.action,
+            action_reason=_bounded_optional_text(
+                event.action_reason, _MAX_ACTION_REASON_CHARS
+            ),
+            tcp_flags=_bounded_optional_text(event.tcp_flags, _MAX_TCP_FLAGS_CHARS),
+            inbound_interface=_bounded_optional_text(
+                event.inbound_interface, _MAX_INTERFACE_CHARS
+            ),
+            outbound_interface=_bounded_optional_text(
+                event.outbound_interface, _MAX_INTERFACE_CHARS
+            ),
+            inbound_zone=_bounded_optional_text(event.inbound_zone, _MAX_ZONE_CHARS),
+            outbound_zone=_bounded_optional_text(event.outbound_zone, _MAX_ZONE_CHARS),
+            source_fqdns=_bounded_fqdns(event.source_fqdns),
+            destination_fqdns=_bounded_fqdns(event.destination_fqdns),
+            bytes=event.bytes,
+            packets=event.packets,
+            duration_ms=event.duration_ms,
+            nat_type=_bounded_optional_text(event.nat_type, _MAX_NAT_TYPE_CHARS),
+            translated_src_ip=_bounded_optional_text(
+                event.translated_src_ip, _MAX_IP_CHARS
+            ),
+            translated_dst_ip=_bounded_optional_text(
+                event.translated_dst_ip, _MAX_IP_CHARS
+            ),
+            translated_src_port=event.translated_src_port,
+            translated_dst_port=event.translated_dst_port,
+            parser_metadata=_bounded_parser_metadata(event.parser_metadata),
             user=event.source_username
         )
 
@@ -60,9 +192,108 @@ class DataMapper:
             dst_port=orm_event.dst_port,
             protocol=orm_event.protocol,
             action=orm_event.action,
+            action_reason=orm_event.action_reason,
+            tcp_flags=orm_event.tcp_flags,
+            inbound_interface=orm_event.inbound_interface,
+            outbound_interface=orm_event.outbound_interface,
+            inbound_zone=orm_event.inbound_zone,
+            outbound_zone=orm_event.outbound_zone,
+            source_fqdns=list(orm_event.source_fqdns or []),
+            destination_fqdns=list(orm_event.destination_fqdns or []),
+            bytes=orm_event.bytes,
+            packets=orm_event.packets,
+            duration_ms=orm_event.duration_ms,
+            nat_type=orm_event.nat_type,
+            translated_src_ip=orm_event.translated_src_ip,
+            translated_dst_ip=orm_event.translated_dst_ip,
+            translated_src_port=orm_event.translated_src_port,
+            translated_dst_port=orm_event.translated_dst_port,
+            parser_metadata=(
+                dict(orm_event.parser_metadata)
+                if isinstance(orm_event.parser_metadata, dict)
+                else None
+            ),
             source_username=orm_event.user,
             parse_status='success'
         )
+
+    @staticmethod
+    def reconcile_existing_event(
+        existing: CanonicalEvent,
+        incoming: CanonicalEvent,
+    ) -> bool:
+        """Conflict-check identity and refresh the bounded network projection.
+
+        The incoming ORM row was produced by ``domain_event_to_orm``, so all
+        strings, FQDN collections, and parser metadata have already passed the
+        one bounded persistence policy. Raw records and unknown metadata are
+        never considered here.
+        """
+        immutable_fields = (
+            "source_name",
+            "parser_name",
+            "timestamp",
+            "source_line",
+            "raw_record_hash",
+            "src_ip",
+            "dst_ip",
+            "src_port",
+            "dst_port",
+            "protocol",
+            "action",
+            "user",
+        )
+        conflicts = [
+            field
+            for field in immutable_fields
+            if _identity_values_conflict(existing, incoming, field)
+        ]
+        if conflicts:
+            raise CanonicalEventIdentityConflictError(conflicts)
+
+        refresh_fields = (
+            "action_reason",
+            "tcp_flags",
+            "inbound_interface",
+            "outbound_interface",
+            "inbound_zone",
+            "outbound_zone",
+            "bytes",
+            "packets",
+            "duration_ms",
+            "nat_type",
+            "translated_src_ip",
+            "translated_dst_ip",
+            "translated_src_port",
+            "translated_dst_port",
+        )
+        changed = False
+        for field in refresh_fields:
+            value = getattr(incoming, field)
+            if getattr(existing, field) != value:
+                setattr(existing, field, value)
+                changed = True
+
+        for field in ("source_fqdns", "destination_fqdns"):
+            value = list(getattr(incoming, field) or [])
+            if list(getattr(existing, field) or []) != value:
+                setattr(existing, field, value)
+                changed = True
+
+        metadata = (
+            dict(incoming.parser_metadata)
+            if isinstance(incoming.parser_metadata, dict)
+            else None
+        )
+        existing_metadata = (
+            dict(existing.parser_metadata)
+            if isinstance(existing.parser_metadata, dict)
+            else None
+        )
+        if existing_metadata != metadata:
+            existing.parser_metadata = metadata
+            changed = True
+        return changed
 
     @staticmethod
     def domain_signal_to_orm(signal: DomainDetectionSignal) -> DetectionSignal:
@@ -125,6 +356,62 @@ class DataMapper:
             mitre_techniques=orm_signal.mitre_techniques,
             tags=[],
         )
+
+    @staticmethod
+    def reconcile_existing_signal(
+        existing: DetectionSignal,
+        incoming: DetectionSignal,
+    ) -> bool:
+        conflicts = [
+            field
+            for field in ("rule_id", "rule_version")
+            if _identity_values_conflict(existing, incoming, field)
+        ]
+        if conflicts:
+            raise DetectionSignalIdentityConflictError(conflicts)
+
+        scalar_fields = (
+            "rule_id",
+            "rule_version",
+            "rule_name",
+            "signal_family",
+            "signal_type",
+            "severity",
+            "confidence",
+            "first_seen",
+            "last_seen",
+            "suppressed",
+            "suppression_reason",
+        )
+        changed = False
+        for field in scalar_fields:
+            value = getattr(incoming, field)
+            current = getattr(existing, field)
+            if field in {"first_seen", "last_seen"}:
+                different = _normalized_datetime(current) != _normalized_datetime(value)
+            else:
+                different = current != value
+            if different:
+                setattr(existing, field, value)
+                changed = True
+
+        json_fields = (
+            "metrics",
+            "mitre_techniques",
+            "target_entities",
+            "event_ids",
+        )
+        for field in json_fields:
+            value = getattr(incoming, field)
+            copied = dict(value or {}) if field == "metrics" else list(value or [])
+            current = getattr(existing, field)
+            normalized_current = (
+                dict(current or {}) if field == "metrics" else list(current or [])
+            )
+            if normalized_current != copied:
+                setattr(existing, field, copied)
+                changed = True
+        return changed
 
     @staticmethod
     def domain_incident_to_orm(bundle: IncidentBundle) -> Incident:
