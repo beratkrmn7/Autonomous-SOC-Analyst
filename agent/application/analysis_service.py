@@ -1,5 +1,6 @@
 import logging
 import uuid
+from dataclasses import replace
 from functools import partial
 from typing import Optional, List, Dict, Any, cast
 from agent.application.search_outbox import SearchOutboxService
@@ -57,6 +58,28 @@ _CANONICAL_RESOLVE_STATUSES = frozenset(
     {"created", "merged", "no_op", "new_generation"}
 )
 _FALLBACK_RESOLVE_STATUSES = frozenset({"unsupported", "stale", "disabled"})
+
+# Resolver statuses that warrant a bounded audit row (true no-ops never do).
+_STATEFUL_AUDIT_ACTIONS = {
+    "created": "stateful_correlation_created",
+    "merged": "stateful_correlation_merged",
+    "new_generation": "stateful_correlation_new_generation",
+    "unsupported": "stateful_correlation_unsupported",
+    "stale": "stateful_correlation_stale",
+}
+
+# Meaningfulness ranking used only to pick the single representative status
+# when several resolver results converge on one final canonical incident; the
+# union of material changes is preserved separately and never depends on this.
+_RESOLVE_STATUS_RANK = {
+    "disabled": 0,
+    "no_op": 0,
+    "created": 1,
+    "unsupported": 1,
+    "stale": 1,
+    "merged": 2,
+    "new_generation": 3,
+}
 
 
 def _new_stateful_metrics() -> Dict[str, int]:
@@ -520,29 +543,81 @@ class AnalysisService:
         if key is not None:
             metrics[key] += 1
 
+    @staticmethod
+    def _combine_resolves(
+        results: List[StatefulResolveResult],
+    ) -> StatefulResolveResult:
+        """Aggregate every resolver result that landed on one final canonical
+        incident during this job into a single deterministic result.
+
+        Several incoming batch incidents (for example a horizontal_scan then a
+        service-specific rdp_probe) can all resolve to one canonical incident,
+        and a later merged/new-generation result may add events, signals,
+        context, a job association, or promote the primary identity. Keeping
+        only the first result (a plain setdefault) would silently drop those.
+        The union of material_changes is preserved and sorted; the final
+        generation and correlation key come from the last result; and the
+        representative status is the most meaningful one for hydration/routing.
+        """
+        material: set[str] = set()
+        for r in results:
+            material.update(r.material_changes)
+        representative = max(
+            results, key=lambda r: _RESOLVE_STATUS_RANK.get(r.status, 0)
+        )
+        last = results[-1]
+        return replace(
+            representative,
+            material_changes=tuple(sorted(material)),
+            generation=last.generation,
+            correlation_key=last.correlation_key,
+            canonical_incident=(
+                last.canonical_incident
+                if last.canonical_incident is not None
+                else representative.canonical_incident
+            ),
+            canonical_incident_id=(
+                last.canonical_incident_id or representative.canonical_incident_id
+            ),
+        )
+
     def _add_stateful_audit(
-        self, uow: UnitOfWork, incident_row: Incident, r: StatefulResolveResult
+        self,
+        uow: UnitOfWork,
+        incident_row: Incident,
+        combined: StatefulResolveResult,
+        results: List[StatefulResolveResult],
     ) -> None:
-        """Bounded audit event(s) for a meaningful stateful outcome. Never for
-        a true no-op, and never carrying event/signal/job ID lists."""
-        action = {
-            "created": "stateful_correlation_created",
-            "merged": "stateful_correlation_merged",
-            "new_generation": "stateful_correlation_new_generation",
-            "unsupported": "stateful_correlation_unsupported",
-            "stale": "stateful_correlation_stale",
-        }.get(r.status)
-        if action is None:
-            return
-        self._add_audit_row(uow, str(incident_row.incident_id), action, r)
-        if "primary_identity_promoted" in r.material_changes:
+        """Bounded audit event(s) for the meaningful stateful outcomes on one
+        final canonical incident. One row per distinct meaningful status (never
+        for a true no-op), each carrying the combined/unioned material changes,
+        plus a single identity-promotion row when the union promoted the
+        primary identity - even if the promotion came from a later result.
+        Never carries event/signal/job ID lists."""
+        incident_id = str(incident_row.incident_id)
+        distinct_statuses = sorted(
+            {r.status for r in results if r.status in _STATEFUL_AUDIT_ACTIONS}
+        )
+        for status in distinct_statuses:
             self._add_audit_row(
-                uow, str(incident_row.incident_id), "stateful_identity_promoted", r
+                uow, incident_id, _STATEFUL_AUDIT_ACTIONS[status], combined, status
+            )
+        if "primary_identity_promoted" in combined.material_changes:
+            self._add_audit_row(
+                uow,
+                incident_id,
+                "stateful_identity_promoted",
+                combined,
+                combined.status,
             )
 
     @staticmethod
     def _add_audit_row(
-        uow: UnitOfWork, incident_id: str, action: str, r: StatefulResolveResult
+        uow: UnitOfWork,
+        incident_id: str,
+        action: str,
+        combined: StatefulResolveResult,
+        status_for_details: str,
     ) -> None:
         audit = AuditEvent(
             audit_event_id=f"ae_{uuid.uuid4().hex}",
@@ -555,10 +630,10 @@ class AnalysisService:
             actor_type="stateful_correlation",
             actor_id="system",
             details={
-                "status": r.status,
-                "correlation_key": r.correlation_key,
-                "generation": r.generation,
-                "material_changes": sorted(r.material_changes),
+                "status": status_for_details,
+                "correlation_key": combined.correlation_key,
+                "generation": combined.generation,
+                "material_changes": sorted(combined.material_changes),
             },
         )
         uow.audit_events.add(audit)
@@ -601,9 +676,12 @@ class AnalysisService:
                 )
                 uow.session.flush()
 
-                # Phase 8: resolve every incoming batch incident.
+                # Phase 8: resolve every incoming batch incident. Every result
+                # that lands on one final canonical incident is collected (not
+                # just the first), so a later merge/new-generation/identity
+                # promotion is never hidden by an earlier created result.
                 final_rows: Dict[str, Incident] = {}
-                resolve_by_final_id: Dict[str, StatefulResolveResult] = {}
+                resolves_by_final_id: Dict[str, List[StatefulResolveResult]] = {}
                 fallbacks: List[tuple] = []
                 for inc in det_result.incidents:
                     stateful_metrics["incoming_batch_incident_count"] += 1
@@ -632,7 +710,7 @@ class AnalysisService:
                         row = cast(Incident, r.canonical_incident)
                         final_id = str(row.incident_id)
                         final_rows[final_id] = row
-                        resolve_by_final_id.setdefault(final_id, r)
+                        resolves_by_final_id.setdefault(final_id, []).append(r)
                     else:
                         # unsupported / stale / disabled: fail closed to the
                         # batch-local path so the detection is never lost.
@@ -642,9 +720,16 @@ class AnalysisService:
                     row = self._persist_batch_local_incident(uow, job, inc)
                     final_id = str(row.incident_id)
                     final_rows.setdefault(final_id, row)
-                    resolve_by_final_id.setdefault(final_id, r)
+                    resolves_by_final_id.setdefault(final_id, []).append(r)
 
                 uow.session.flush()
+
+                # One combined, deterministic result per final canonical
+                # incident (unioned material changes, final generation/key).
+                combined_by_final_id: Dict[str, StatefulResolveResult] = {
+                    fid: self._combine_resolves(rs)
+                    for fid, rs in resolves_by_final_id.items()
+                }
 
                 stateful_metrics["final_canonical_incident_count"] = len(final_rows)
                 stateful_metrics["absorbed_batch_incident_count"] = max(
@@ -654,9 +739,11 @@ class AnalysisService:
 
                 # Bounded audit events after every final incident row exists.
                 for final_id, row in final_rows.items():
-                    final_resolve = resolve_by_final_id.get(final_id)
-                    if final_resolve is not None:
-                        self._add_stateful_audit(uow, row, final_resolve)
+                    combined = combined_by_final_id.get(final_id)
+                    if combined is not None:
+                        self._add_stateful_audit(
+                            uow, row, combined, resolves_by_final_id[final_id]
+                        )
 
                 current_job_event_ids = set(result.event_map.keys())
                 current_job_signal_ids = set(signal_row_by_id.keys())
@@ -666,7 +753,7 @@ class AnalysisService:
                 for final_id in sorted(final_rows):
                     row = final_rows[final_id]
                     self._raise_if_cancelled(job_id)
-                    final_resolve = resolve_by_final_id.get(final_id)
+                    final_resolve = combined_by_final_id.get(final_id)
                     row_event_ids = {str(e.event_id) for e in row.events}
                     row_signal_ids = {str(s.signal_id) for s in row.signals}
                     hydrated = hydrate_canonical_incident(
@@ -978,8 +1065,13 @@ class AnalysisService:
 
                             routing_metrics["total_incidents"] += 1
                             if decision.route == "individual_triage":
+                                # The restored route and its llm_invoked/origin
+                                # metadata describe how the stored report was
+                                # ORIGINALLY produced. This is a whole-job replay
+                                # served from persistence: no provider is invoked
+                                # for this request, so provider_invocation_count
+                                # stays 0 and is never confused with a live call.
                                 routing_metrics["individual_triage_count"] += 1
-                                routing_metrics["provider_invocation_count"] += 1
                             elif decision.route == "deterministic_report":
                                 routing_metrics["deterministic_report_count"] += 1
                             elif decision.route == "digest":

@@ -19,6 +19,7 @@ from agent.persistence.orm_models import (
     IncidentCorrelationState,
     Report,
     SearchIndexOutbox,
+    TriageRun,
 )
 from agent.persistence.unit_of_work import UnitOfWork
 
@@ -149,6 +150,20 @@ def test_whole_job_replay_creates_no_new_writes(session_factory, fake_app, monke
     with session_factory() as session:
         assert session.get(Incident, "INC-A").version == incident_version_before
     assert [s.get("incident_id") for s in replay.incidents] == ["INC-A"]
+
+    # The replay request made zero provider calls: provider_invocation_count is
+    # a per-request counter, not the stored report's original production origin.
+    assert replay.routing_metrics["provider_invocation_count"] == 0
+    # The restored route and its original llm_invoked/origin metadata are still
+    # surfaced (they describe how the stored report was originally produced).
+    restored = replay.incidents[0]
+    assert restored["triage_route"] == "individual_triage"
+    assert restored["llm_invoked"] is True
+    assert restored.get("triage_origin") == "llm"
+    # No new TriageRun or Report was created by the replay.
+    with session_factory() as session:
+        assert session.query(TriageRun).count() == 1
+        assert session.query(Report).count() == 1
 
 
 def test_unexpected_resolver_failure_rolls_back_all_writes(session_factory, monkeypatch) -> None:

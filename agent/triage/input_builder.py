@@ -128,21 +128,34 @@ def build_triage_input(
     max_preview_chars = settings.max_event_preview_chars
     max_context_events = settings.max_context_events
     max_candidate_evidence = settings.max_candidate_evidence
-    
-    # Sort events deterministically by timestamp then event_id
+
+    # Deterministically SELECT the bounded set of events BEFORE constructing any
+    # SafeEventView. A canonical incident merged across jobs may carry thousands
+    # of historical events; building a view for each and slicing afterwards
+    # would materialize the whole set. Incident events (sorted) come first, then
+    # context events (sorted), capped at max_context_events - identical ordering
+    # to the previous "(safe_events + safe_context)[:max_context_events]".
     sorted_events = sorted(context.events, key=lambda e: (e.timestamp or "", e.event_id))
-    safe_events = [_build_safe_event(e, max_preview_chars) for e in sorted_events]
-    
     sorted_context = sorted(context.context_events, key=lambda e: (e.timestamp or "", e.event_id))
-    safe_context = [_build_safe_event(e, max_preview_chars) for e in sorted_context]
-    
-    signal_summaries = []
-    for sig in detected_signals:
-        signal_summaries.append(f"[{sig.get('rule_name', 'unknown')}] {sig.get('description', '')} - Severity: {sig.get('severity', 'none')} Confidence: {sig.get('confidence_score', 0.0)}")
-    signal_summaries.sort()
+    selected_events = (sorted_events + sorted_context)[:max_context_events]
+    limited_events = [_build_safe_event(e, max_preview_chars) for e in selected_events]
 
     incident_event_ids = set(context.incident.event_ids)
     signal_views = _build_signal_views(detected_signals, incident_event_ids)
+
+    # Signal summaries are derived from the already-bounded, deduplicated,
+    # sorted, and truncated signal_views (<= MAX_SIGNAL_VIEWS) rather than from
+    # every attached raw signal, so a campaign with thousands of historical
+    # signals can never push thousands of summary lines into the prompt. The
+    # complete attached rule-ID set still reaches deterministic routing through
+    # DetectionResult/signal_map - this bound is provider-facing only.
+    signal_summaries = sorted(
+        {
+            f"[{sv.rule_name}] {sv.signal_type} ({sv.signal_family}) - "
+            f"Severity: {sv.severity} Confidence: {sv.confidence}"
+            for sv in signal_views
+        }
+    )
 
     ev_candidates = []
     for ev in candidate_evidence:
@@ -165,9 +178,7 @@ def build_triage_input(
         
     ev_candidates.sort(key=lambda c: c.evidence_id)
     ev_candidates = ev_candidates[:max_candidate_evidence]
-    
-    limited_events = (safe_events + safe_context)[:max_context_events]
-    
+
     mitre_set = set()
     for sig in detected_signals:
         mitre_techs = sig.get('mitre_techniques')

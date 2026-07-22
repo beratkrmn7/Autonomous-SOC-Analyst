@@ -61,12 +61,41 @@ def _print_incident_state(inc_state: IncidentState) -> None:
     print("\n" + "="*50 + "\n")
 
 
+def _run_persistent_analysis(file_path: str, *, run_triage: bool, analysis_mode: str, source_name: str):
+    """Run detect/analyze through the persistent AnalysisService so jobs,
+    events, signals, incidents (and, in analyze mode, triage/report outputs)
+    are persisted and optional stateful cross-job correlation applies. Computes
+    the file SHA-256, analysis mode, pipeline version, and the existing
+    idempotency-key format. Runs no migrations."""
+    from agent.application.service_factory import (
+        build_persistent_analysis_service,
+        compute_file_sha256,
+        compute_idempotency_key,
+    )
+    from agent.config import get_settings
+
+    settings = get_settings()
+    pipeline_version = settings.pipeline_version
+    file_sha256 = compute_file_sha256(file_path)
+    idempotency_key = compute_idempotency_key(file_sha256, pipeline_version, analysis_mode)
+    svc = build_persistent_analysis_service(settings)
+    return svc.analyze_file(
+        file_path,
+        run_triage=run_triage,
+        source_name=source_name,
+        file_sha256=file_sha256,
+        idempotency_key=idempotency_key,
+        pipeline_version=pipeline_version,
+        analysis_mode=analysis_mode,
+    )
+
+
 def analyze_file(file_path: str):
     console.print(f"[bold blue]Starting File Analysis: {file_path}[/bold blue]")
-    from agent.application.analysis_service import AnalysisService
 
-    svc = AnalysisService()
-    result = svc.analyze_file(file_path, run_triage=True, source_name="cli")
+    result = _run_persistent_analysis(
+        file_path, run_triage=True, analysis_mode="analyze", source_name="cli"
+    )
 
     _print_analysis_summary(result)
 
@@ -172,12 +201,11 @@ def ingest_file_only(file_path: str):
 
 def detect_file_only(file_path: str):
     console.print(f"[bold blue]Starting File Detection: {file_path}[/bold blue]")
-    
-    from agent.application.analysis_service import AnalysisService
-    svc = AnalysisService()
-    
+
     console.print("[bold blue]Running Detection Engine...[/bold blue]")
-    result = svc.analyze_file(file_path, run_triage=False, source_name="cli_detect")
+    result = _run_persistent_analysis(
+        file_path, run_triage=False, analysis_mode="detect", source_name="cli_detect"
+    )
     det_result = result.detection_result
     
     console.print("\n[bold cyan]--- DETECTION SUMMARY ---[/bold cyan]")
