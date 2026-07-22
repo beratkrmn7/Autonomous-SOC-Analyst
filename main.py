@@ -68,10 +68,29 @@ def analyze_file(file_path: str):
     svc = AnalysisService()
     result = svc.analyze_file(file_path, run_triage=True, source_name="cli")
 
+    _print_analysis_summary(result)
+
     for inc_state in result.incidents:
         _print_incident_state(inc_state)
 
     _print_routing_summary(result)
+
+def _print_analysis_summary(result) -> None:
+    console.print("\n[bold cyan]--- ANALYSIS SUMMARY ---[/bold cyan]")
+    ingestion = getattr(result, "ingestion_result", None)
+    if ingestion is not None:
+        console.print(f"Parsed/valid events: {ingestion.metrics.parsed_records}")
+    det_result = result.detection_result
+    if det_result is not None:
+        console.print(f"Detected signals: {det_result.metrics.signal_count}")
+        # With stateful correlation enabled this is the final canonical count.
+        console.print(f"Final incidents: {det_result.metrics.incident_count}")
+    metrics = result.routing_metrics or {}
+    report_count = (
+        metrics.get("individual_triage_count", 0)
+        + metrics.get("deterministic_report_count", 0)
+    )
+    console.print(f"Reports: {report_count}")
 
 def run_mock_test():
     run_all = os.environ.get("RUN_ALL", "false").lower() == "true"

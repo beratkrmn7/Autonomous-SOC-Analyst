@@ -22,6 +22,11 @@ class AnalysisResult(BaseModel):
     triage_digests: List[Dict[str, Any]] = Field(default_factory=list)
     routing_metrics: Dict[str, Any] = Field(default_factory=dict)
 
+    # Phase 6E.4: bounded scalar counters describing how incoming batch-local
+    # incidents were resolved into final canonical incidents when stateful
+    # cross-job correlation is enabled. Empty when the feature is disabled.
+    stateful_metrics: Dict[str, Any] = Field(default_factory=dict)
+
     # Idempotency fields
     job_id: Optional[str] = None
     reused: bool = False

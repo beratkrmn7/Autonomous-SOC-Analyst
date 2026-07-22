@@ -71,6 +71,44 @@ The important trust boundary is between deterministic analysis and agentic revie
 Run `python main.py --detect-file ...` or call `/detect/file` when a completely
 provider-free path is required.
 
+## End-to-end analysis workflow
+
+Every entry point — CLI detect/analyze, synchronous API requests, and background
+analysis workers — shares one `AnalysisService` persistence flow, in this fixed order:
+
+1. **Log ingestion.** Bounded readers load records safely from a file.
+2. **Parsing and semantic validation.** The parser registry normalizes records into
+   `CanonicalLogEvent`s and drops malformed or semantically invalid records.
+3. **Deterministic detection.** All semantically valid events are evaluated by the 36
+   default rules; every emitted signal is contract-validated.
+4. **Batch correlation.** Valid signals are correlated into batch-local incident bundles.
+5. **Optional persistent cross-job correlation.** When
+   `STATEFUL_CORRELATION_ENABLED=true`, batch incidents are resolved against previously
+   persisted incidents so activity from the same campaign across adjacent files converges
+   on one canonical incident. Absorbed duplicates are never persisted, reported, returned,
+   or projected. This is controlled by a feature flag and **remains disabled by default**
+   until final real-log validation. When off, the batch-local path runs unchanged and
+   `IncidentCorrelationState` is never read or written.
+6. **Deterministic triage routing.** Each unique final incident is routed exactly once —
+   `individual_triage`, `deterministic_report`, `digest`, or `store_only`.
+7. **LLM only for actionable incidents.** Only `individual_triage` incidents reach the
+   provider, at most once per unique final incident per job. The other three routes make
+   zero provider calls.
+8. **Concise SOC report.** Reports stay short and evidence-bound: a firewall allow does
+   not prove access, transport activity does not prove compromise, and deterministic
+   incident identity cannot be renamed by the model.
+9. **Persistence and API/CLI output.** Events, signals, canonical incidents, reports, and
+   audit events are committed in one transaction, with final projections enqueued through
+   the transactional outbox. Any unexpected failure rolls back the entire job.
+
+Guarantees worth stating explicitly:
+
+- Detection is fully deterministic.
+- Ingestion and detection make **zero** LLM calls under any condition.
+- Only individual-triage incidents reach the LLM.
+- Persistent cross-job correlation is controlled by a feature flag whose default is off.
+- No automated containment or firewall changes are ever performed.
+
 ## Detection coverage
 
 The default registry contains exactly **36 rules**, ordered by ascending priority and then
@@ -178,6 +216,7 @@ rate-limit, search, retention, and OpenSearch options.
 | `STAGING_DIR` | `/tmp/agent_staging` | Shared bounded upload staging directory. |
 | `RATE_LIMIT_BACKEND` | `memory` | Development memory limiter or production Redis limiter. |
 | `OPENSEARCH_ENABLED` | `false` | Enables explicit OpenSearch maintenance operations. |
+| `STATEFUL_CORRELATION_ENABLED` | `false` | Enables optional persistent cross-job incident correlation. Default off until final real-log validation; when off, behavior, incident IDs, and provider-call counts are exactly the batch-local path. |
 
 For a provider-free local configuration, set:
 
