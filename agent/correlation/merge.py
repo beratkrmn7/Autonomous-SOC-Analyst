@@ -21,11 +21,11 @@ from agent.detection.incident_correlation import (
 )
 from agent.detection.models import DetectionEvidence, DetectionSignal, IncidentBundle
 from agent.detection.scoring import (
-    IncidentSeverityFacts,
     calculate_incident_confidence,
     calculate_incident_severity,
-    combine_incident_severity_facts,
+    derive_incident_severity_facts,
 )
+from agent.schema import CanonicalLogEvent
 
 
 _SEVERITY_RANK: dict[str, int] = {
@@ -134,6 +134,7 @@ def merge_incident_bundles(
     available_signals: Optional[Sequence[DetectionSignal]],
     settings: DetectionSettings,
     max_context_events: int,
+    final_events: Optional[Sequence[CanonicalLogEvent]] = None,
 ) -> IncidentMergeOutcome:
     """Merge `incoming` into `canonical`, preserving canonical's incident_id.
 
@@ -161,7 +162,8 @@ def merge_incident_bundles(
     last_seen = max(canonical.last_seen, incoming.last_seen)
     evidence = _merge_evidence(canonical.evidence, incoming.evidence, event_id_set)
 
-    anchor, scoring_recalculated = _select_anchor(canonical, incoming, available_signals)
+    anchor, signals_complete = _select_anchor(canonical, incoming, available_signals)
+    scoring_recalculated = False
 
     identity_promoted = False
     incident_type = canonical.incident_type
@@ -200,17 +202,20 @@ def merge_incident_bundles(
             for signal in (available_signals or ())
             if signal.signal_id in signal_ids
         ]
-        canonical_facts = IncidentSeverityFacts.from_metrics(canonical.metrics)
-        incoming_facts = IncidentSeverityFacts.from_metrics(incoming.metrics)
-        if canonical_facts is not None and incoming_facts is not None:
-            severity_facts = combine_incident_severity_facts(
-                canonical_facts,
-                incoming_facts,
-                family=incident_family,
+        final_event_map = {
+            event.event_id: event for event in (final_events or ())
+        }
+        if signals_complete and set(final_event_map) == event_id_set:
+            severity_facts = derive_incident_severity_facts(
+                list(final_event_map.values()), family=incident_family
             )
-        severity = calculate_incident_severity(
-            cluster, primary_entity, settings, facts=severity_facts
-        )
+            severity = calculate_incident_severity(
+                cluster, primary_entity, settings, facts=severity_facts
+            )
+            scoring_recalculated = True
+        # Missing persisted event rows make any synthetic scalar combination
+        # unsafe. Preserve the canonical severity rather than summing counts
+        # or taking a max over distinct-destination metrics.
         confidence = calculate_incident_confidence(cluster)
 
     absorbed_signal_ids = sorted(sid for sid in signal_ids if sid != primary_signal_id)

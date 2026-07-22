@@ -8,6 +8,7 @@ import datetime
 from agent.correlation.merge import merge_incident_bundles
 from agent.detection.config import DetectionSettings
 from agent.detection.models import DetectionEvidence, DetectionSignal, IncidentBundle
+from agent.schema import CanonicalLogEvent
 
 
 FIXED = datetime.datetime(2026, 7, 10, 6, 0, 0, tzinfo=datetime.timezone.utc)
@@ -227,10 +228,41 @@ def test_severity_and_confidence_use_existing_scoring_helpers() -> None:
     outcome = merge_incident_bundles(
         canonical=canonical, incoming=incoming, available_signals=[sig1, sig2],
         settings=SETTINGS, max_context_events=50,
+        final_events=[
+            CanonicalLogEvent(
+                event_id=event_id,
+                timestamp=FIXED,
+                src_ip="203.0.113.10",
+                dst_ip="10.0.0.5",
+                dst_port=6379,
+                protocol="TCP",
+                action="pass",
+                parser_name="pf_firewall",
+                parse_status="success",
+            )
+            for event_id in ("e1", "e2")
+        ],
     )
 
+    from agent.detection.scoring import derive_incident_severity_facts
+
+    facts = derive_incident_severity_facts(
+        [
+            CanonicalLogEvent(
+                event_id=event_id,
+                timestamp=FIXED,
+                dst_ip="10.0.0.5",
+                dst_port=6379,
+                action="pass",
+                parser_name="pf_firewall",
+                parse_status="success",
+            )
+            for event_id in ("e1", "e2")
+        ],
+        family="service_probing",
+    )
     expected_severity = calculate_incident_severity(
-        [sig1, sig2], outcome.incident.primary_entity, SETTINGS
+        [sig1, sig2], outcome.incident.primary_entity, SETTINGS, facts=facts
     )
     expected_confidence = calculate_incident_confidence([sig1, sig2])
     assert outcome.incident.severity == expected_severity
@@ -272,6 +304,48 @@ def test_incomplete_signal_rows_preserve_canonical_severity_and_confidence() -> 
     # Mechanical fields still merge even though scoring/identity are frozen.
     assert set(outcome.incident.event_ids) == {"e1", "e2"}
     assert set(outcome.incident.signal_ids) == {"SIG-1", "SIG-2"}
+
+
+def test_incomplete_final_event_union_preserves_canonical_severity() -> None:
+    sig1 = _signal(
+        "SIG-1", signal_type="rdp_probe", signal_family="service_probing",
+        severity="high", confidence=0.9, event_ids=["e1"],
+    )
+    sig2 = _signal(
+        "SIG-2", signal_type="rdp_probe", signal_family="service_probing",
+        severity="critical", confidence=0.95, event_ids=["e2"],
+    )
+    canonical = _bundle(
+        "INC-CANON", incident_type="rdp_probe", incident_family="service_probing",
+        signal_ids=["SIG-1"], event_ids=["e1"], primary_signal_id="SIG-1",
+        severity="high", confidence=0.9,
+    )
+    incoming = _bundle(
+        "INC-INCOMING", incident_type="rdp_probe", incident_family="service_probing",
+        signal_ids=["SIG-2"], event_ids=["e2"], primary_signal_id="SIG-2",
+        severity="critical", confidence=0.95,
+    )
+    only_one_event = CanonicalLogEvent(
+        event_id="e1",
+        timestamp=FIXED,
+        dst_ip="10.0.0.5",
+        dst_port=6379,
+        action="pass",
+        parser_name="pf_firewall",
+        parse_status="success",
+    )
+
+    outcome = merge_incident_bundles(
+        canonical=canonical,
+        incoming=incoming,
+        available_signals=[sig1, sig2],
+        settings=SETTINGS,
+        max_context_events=50,
+        final_events=[only_one_event],
+    )
+
+    assert outcome.scoring_recalculated is False
+    assert outcome.incident.severity == "high"
 
 
 def test_evidence_stays_bounded_to_existing_incident_evidence_maximum() -> None:

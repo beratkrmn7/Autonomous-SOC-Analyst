@@ -11,6 +11,7 @@ import main
 import server
 from agent.application import idempotency, service_factory
 from agent.application.idempotency import compute_idempotency_key
+from agent.config import Settings
 from agent.persistence.orm_models import Incident
 
 from tests.stateful_integration.conftest import campaign_job_a, make_settings
@@ -22,6 +23,15 @@ def test_key_format_and_determinism() -> None:
     assert key == hashlib.sha256(b"abc123:1.0.0:detect").hexdigest()
     # Deterministic.
     assert key == compute_idempotency_key("abc123", "1.0.0", "detect")
+
+
+def test_upgrade_defaults_create_new_pipeline_and_stateful_scopes() -> None:
+    assert Settings.model_fields["pipeline_version"].default == "1.1.0"
+    assert Settings.model_fields["stateful_correlation_version"].default == "2"
+    old_key = compute_idempotency_key("abc123", "1.0.0", "analyze")
+    new_key = compute_idempotency_key("abc123", "1.1.0", "analyze")
+    assert old_key != new_key
+    assert new_key == compute_idempotency_key("abc123", "1.1.0", "analyze")
 
 
 def test_detect_and_analyze_are_separate_scopes() -> None:

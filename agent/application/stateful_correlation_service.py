@@ -11,6 +11,7 @@ suppression) is Phase 6E.4B's responsibility, not this foundation's.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Literal, Optional, Sequence, cast
@@ -220,6 +221,94 @@ def _reconcile_associations(
     return events_or_signals_changed, context_changed
 
 
+def reconcile_existing_incident(
+    existing: Incident,
+    *,
+    bundle: IncidentBundle,
+    job: IngestionJob,
+    max_context_events: int,
+) -> bool:
+    """Refresh a legacy incident without touching analyst lifecycle state.
+
+    Associations are reconciled as a deterministic union, context remains
+    disjoint from primary events, and the caller performs the single version
+    increment when this function reports a material change.
+    """
+    changed = False
+    if job not in existing.jobs:
+        existing.jobs.append(job)
+        changed = True
+
+    existing_event_ids = {
+        str(row.event_id) for row in existing.events if not row.is_context
+    }
+    final_event_ids = existing_event_ids | set(bundle.event_ids)
+    existing_context_ids = {
+        str(row.event_id) for row in existing.events if row.is_context
+    }
+    context_event_ids = _bounded_context_ids(
+        existing_context_ids,
+        bundle.context_event_ids,
+        final_event_ids,
+        max_context_events=max_context_events,
+    )
+    association_changed, context_changed = _reconcile_associations(
+        existing,
+        event_ids=sorted(final_event_ids),
+        context_event_ids=context_event_ids,
+        signal_ids=sorted(set(bundle.signal_ids) | {str(s.signal_id) for s in existing.signals}),
+    )
+    changed = changed or association_changed or context_changed
+
+    scalar_values = {
+        "title": bundle.title,
+        "incident_type": bundle.incident_type,
+        "incident_family": bundle.incident_family,
+        "severity": bundle.severity,
+        "confidence": bundle.confidence,
+        "first_seen": bundle.first_seen,
+        "last_seen": bundle.last_seen,
+        "primary_entity": bundle.primary_entity,
+        "merge_key": bundle.merge_key,
+    }
+    for field, value in scalar_values.items():
+        current = getattr(existing, field)
+        if field in {"first_seen", "last_seen"}:
+            different = _as_utc(current) != _as_utc(value)
+        elif field == "confidence":
+            different = abs(float(str(current)) - float(str(value))) > 1e-9
+        else:
+            different = current != value
+        if different:
+            setattr(existing, field, value)
+            changed = True
+
+    for field, values in (
+        ("target_entities", bundle.target_entities),
+        ("mitre_techniques", bundle.mitre_techniques),
+    ):
+        normalized = sorted(set(values))
+        if list(getattr(existing, field) or []) != normalized:
+            setattr(existing, field, normalized)
+            changed = True
+
+    metrics = {
+        **dict(existing.metrics or {}),
+        **dict(bundle.metrics),
+    }
+    if dict(existing.metrics or {}) != metrics:
+        existing.metrics = metrics  # type: ignore[assignment]
+        changed = True
+    return changed
+
+
+def _version_scoped_incident_id(incident_id: str, correlation_version: str) -> str:
+    digest = hashlib.sha256(
+        f"{incident_id}|stateful|{correlation_version}".encode("utf-8")
+    ).hexdigest()[:12].upper()
+    return f"INC-{digest}"
+
+
 def _apply_stateful_metrics(
     row: Incident,
     *,
@@ -293,40 +382,12 @@ class StatefulIncidentMergeService:
 
         existing = uow.incidents.get_for_update(bundle.incident_id)
         if existing is not None:
-            job_newly_associated = job not in existing.jobs
-            if job_newly_associated:
-                existing.jobs.append(job)
-
-            existing_context_ids = {
-                row.event_id for row in existing.events if row.is_context
-            }
-            final_event_ids = {
-                row.event_id for row in existing.events if not row.is_context
-            } | set(bundle.event_ids)
-            bounded_context_ids = _bounded_context_ids(
-                existing_context_ids,
-                bundle.context_event_ids,
-                final_event_ids,
-                max_context_events=max_context_events,
-            )
-
-            events_or_signals_changed, context_changed = _reconcile_associations(
+            previous_metrics = dict(existing.metrics or {})
+            material_change = reconcile_existing_incident(
                 existing,
-                event_ids=bundle.event_ids,
-                context_event_ids=bounded_context_ids,
-                signal_ids=bundle.signal_ids,
-            )
-
-            prev_metrics = cast(dict, existing.metrics or {})
-            first_time_stateful = "stateful_correlation_key" not in prev_metrics
-            prev_generation = int(prev_metrics.get("stateful_generation", 0) or 0)
-            material_change = (
-                job_newly_associated
-                or events_or_signals_changed
-                or context_changed
-                or first_time_stateful
-                or prev_metrics.get("stateful_correlation_key") != correlation_key
-                or prev_generation != generation
+                bundle=bundle,
+                job=job,
+                max_context_events=max_context_events,
             )
 
             # Recompute from the final persisted union (after reconciliation
@@ -336,7 +397,8 @@ class StatefulIncidentMergeService:
             )
             final_signal_count = len(existing.signals)
             primary_signal_id = (
-                str(prev_metrics.get("primary_signal_id") or "") or bundle_primary_signal_id
+                str((existing.metrics or {}).get("primary_signal_id") or "")
+                or bundle_primary_signal_id
             )
             absorbed_signal_count = (
                 max(0, final_signal_count - 1) if primary_signal_id else final_signal_count
@@ -348,12 +410,15 @@ class StatefulIncidentMergeService:
                 strategy=strategy,
                 correlation_version=correlation_version,
                 generation=generation,
-                merge_count=int(prev_metrics.get("stateful_merge_count", 0) or 0),
+                merge_count=int(previous_metrics.get("stateful_merge_count", 0) or 0),
                 job_count=len(existing.jobs),
                 total_events=final_event_count,
                 correlated_signal_count=final_signal_count,
                 absorbed_signal_count=absorbed_signal_count,
                 primary_signal_id=primary_signal_id,
+            )
+            material_change = material_change or previous_metrics != dict(
+                existing.metrics or {}
             )
             if material_change:
                 existing.version = max(1, int(existing.version or 1)) + 1
@@ -419,6 +484,9 @@ class StatefulIncidentMergeService:
             available_signals=available_signals,
             settings=detection_settings,
             max_context_events=max_context_events,
+            final_events=self._load_complete_final_events(
+                uow, canonical_row, incoming_bundle
+            ),
         )
         merged = outcome.incident
 
@@ -492,6 +560,32 @@ class StatefulIncidentMergeService:
         canonical_row.version = max(1, int(canonical_row.version or 1)) + 1  # type: ignore[assignment]
 
         return canonical_row, tuple(material_changes), evidence_event_ids
+
+    @staticmethod
+    def _load_complete_final_events(
+        uow: UnitOfWork,
+        canonical_row: Incident,
+        incoming_bundle: IncidentBundle,
+    ) -> list[CanonicalLogEvent] | None:
+        final_event_ids = {
+            str(row.event_id)
+            for row in canonical_row.events
+            if not row.is_context
+        } | set(incoming_bundle.event_ids)
+        events: list[CanonicalLogEvent] = []
+        for event_id in sorted(final_event_ids):
+            row = uow.canonical_events.get(event_id)
+            if row is None:
+                return None
+            try:
+                events.append(DataMapper.orm_to_domain_event(row))
+            except (TypeError, ValueError):
+                # A malformed legacy row is not a license to fabricate
+                # aggregate severity facts from partial scalar metrics.
+                return None
+        if {event.event_id for event in events} != final_event_ids:
+            return None
+        return events
 
 
 class StatefulIncidentCorrelationService:
@@ -654,11 +748,33 @@ class StatefulIncidentCorrelationService:
         session = uow.session
         assert session is not None
         canonical_row: Optional[Incident] = None
+        canonical_bundle = incoming_bundle
+        preexisting = uow.incidents.get_for_update(incoming_bundle.incident_id)
+        if preexisting is not None:
+            different_version_state = (
+                session.query(IncidentCorrelationState)
+                .filter(
+                    IncidentCorrelationState.incident_id
+                    == incoming_bundle.incident_id,
+                    IncidentCorrelationState.correlation_version
+                    != profile.correlation_version,
+                )
+                .first()
+            )
+            if different_version_state is not None:
+                canonical_bundle = incoming_bundle.model_copy(
+                    update={
+                        "incident_id": _version_scoped_incident_id(
+                            incoming_bundle.incident_id,
+                            profile.correlation_version,
+                        )
+                    }
+                )
         try:
             with session.begin_nested():
                 canonical_row, _ = self._merge_service.create_canonical(
                     uow,
-                    bundle=incoming_bundle,
+                    bundle=canonical_bundle,
                     job=job,
                     correlation_key=correlation_key,
                     strategy=profile.strategy,

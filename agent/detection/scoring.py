@@ -113,34 +113,6 @@ class IncidentSeverityFacts:
         )
 
 
-def combine_incident_severity_facts(
-    left: IncidentSeverityFacts,
-    right: IncidentSeverityFacts,
-    *,
-    family: str,
-) -> IncidentSeverityFacts:
-    """Conservatively combine persisted scalar facts for cross-job scoring."""
-    asset_value = max(
-        (left.asset_value, right.asset_value), key=lambda value: _ASSET_RANK[value]
-    )
-    distinct_destinations = max(
-        left.distinct_destination_count, right.distinct_destination_count
-    )
-    return IncidentSeverityFacts(
-        family=family,
-        total_event_count=left.total_event_count + right.total_event_count,
-        allowed_event_count=left.allowed_event_count + right.allowed_event_count,
-        blocked_event_count=left.blocked_event_count + right.blocked_event_count,
-        distinct_destination_count=distinct_destinations,
-        asset_value=asset_value,
-        targeting="targeted" if distinct_destinations <= 2 else "broad",
-        max_sensitive_ports_per_destination=max(
-            left.max_sensitive_ports_per_destination,
-            right.max_sensitive_ports_per_destination,
-        ),
-    )
-
-
 def derive_incident_severity_facts(
     events: list[CanonicalLogEvent], *, family: str
 ) -> IncidentSeverityFacts:

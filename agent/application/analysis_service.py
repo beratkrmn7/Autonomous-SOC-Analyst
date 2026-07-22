@@ -42,6 +42,7 @@ from agent.application.cancellation import (
 from agent.application.stateful_correlation_service import (
     StatefulIncidentCorrelationService,
     StatefulResolveResult,
+    reconcile_existing_incident,
 )
 from agent.application.stateful_pipeline import (
     HydratedCanonicalIncident,
@@ -267,6 +268,7 @@ class AnalysisService:
                 job.events.append(orm_event)
                 persisted_events.append(orm_event)
             else:
+                DataMapper.reconcile_existing_event(existing_event, orm_event)
                 if existing_event not in job.events:
                     job.events.append(existing_event)
                 persisted_events.append(existing_event)
@@ -289,6 +291,7 @@ class AnalysisService:
                 persisted_signals.append(orm_signal)
                 signal_row_by_id[str(orm_signal.signal_id)] = orm_signal
             else:
+                DataMapper.reconcile_existing_signal(existing_signal, orm_signal)
                 if existing_signal not in job.signals:
                     job.signals.append(existing_signal)
                 persisted_signals.append(existing_signal)
@@ -471,10 +474,17 @@ class AnalysisService:
                     IncidentLifecycle.transition(orm_inc, "new", actor="detection_engine")
                     persisted_incidents.append(orm_inc)
                 else:
-                    if existing not in job.incidents:
-                        job.incidents.append(existing)
-                        # job_ids is part of the incident projection, so the existing
-                        # optimistic version is also the projection version source.
+                    changed = reconcile_existing_incident(
+                        existing,
+                        bundle=inc,
+                        job=job,
+                        max_context_events=(
+                            self.detection_engine.settings.MAX_CONTEXT_EVENTS_PER_INCIDENT
+                        ),
+                    )
+                    if changed:
+                        # One optimistic/projection version increment for the
+                        # complete scalar + association reconciliation.
                         existing.version = max(1, int(existing.version or 1)) + 1
                     persisted_incidents.append(existing)
 
@@ -558,8 +568,15 @@ class AnalysisService:
             job.incidents.append(orm_inc)
             IncidentLifecycle.transition(orm_inc, "new", actor="detection_engine")
             return orm_inc
-        if existing not in job.incidents:
-            job.incidents.append(existing)
+        changed = reconcile_existing_incident(
+            existing,
+            bundle=bundle,
+            job=job,
+            max_context_events=(
+                self.detection_engine.settings.MAX_CONTEXT_EVENTS_PER_INCIDENT
+            ),
+        )
+        if changed:
             existing.version = max(1, int(existing.version or 1)) + 1
         return existing
 
