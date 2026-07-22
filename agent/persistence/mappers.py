@@ -19,6 +19,86 @@ _UNKNOWN_PRIMARY_ENTITY = "unknown"
 # visible) to reconstruct absorbed_signal_ids without a migration.
 _PRIMARY_SIGNAL_ID_METRICS_KEY = "primary_signal_id"
 
+_MAX_INTERFACE_CHARS = 128
+_MAX_ZONE_CHARS = 128
+_MAX_ACTION_REASON_CHARS = 256
+_MAX_NAT_TYPE_CHARS = 64
+_MAX_IP_CHARS = 64
+_MAX_TCP_FLAGS_CHARS = 64
+_MAX_FQDN_CHARS = 253
+_MAX_FQDNS = 20
+_MAX_METADATA_TEXT_CHARS = 128
+_MAX_TCP_FLAG_TOKENS = 16
+_PERSISTED_METADATA_BOOL_FIELDS = (
+    "spi_anomaly",
+    "tcp_flags_present",
+    "tcp_flags_explicit_none",
+)
+_PERSISTED_METADATA_TEXT_FIELDS = (
+    "original_device_action",
+    "original_tcp_flags",
+    "pf_event_type",
+)
+
+
+def _bounded_optional_text(value, max_chars):
+    if value is None:
+        return None
+    normalized = " ".join(str(value).split())
+    return normalized[:max_chars] or None
+
+
+def _bounded_fqdns(values):
+    if not isinstance(values, (list, tuple)):
+        return []
+    bounded = []
+    seen = set()
+    for value in values:
+        normalized = _bounded_optional_text(value, _MAX_FQDN_CHARS)
+        if normalized is None or normalized in seen:
+            continue
+        seen.add(normalized)
+        bounded.append(normalized)
+        if len(bounded) >= _MAX_FQDNS:
+            break
+    return bounded
+
+
+def _bounded_parser_metadata(metadata):
+    """Persist only the bounded PF facts required after hydration.
+
+    Canonical parser metadata is intentionally not a general persistence
+    extension point. Unknown keys and nested values are discarded.
+    """
+    if not isinstance(metadata, dict):
+        return None
+
+    bounded = {}
+    for key in _PERSISTED_METADATA_BOOL_FIELDS:
+        value = metadata.get(key)
+        if isinstance(value, bool):
+            bounded[key] = value
+    for key in _PERSISTED_METADATA_TEXT_FIELDS:
+        value = _bounded_optional_text(metadata.get(key), _MAX_METADATA_TEXT_CHARS)
+        if value is not None:
+            bounded[key] = value
+
+    tokens = metadata.get("tcp_flag_tokens")
+    if isinstance(tokens, (list, tuple)):
+        bounded_tokens = []
+        seen_tokens = set()
+        for token in tokens:
+            normalized = _bounded_optional_text(token, 16)
+            if normalized is None or normalized in seen_tokens:
+                continue
+            seen_tokens.add(normalized)
+            bounded_tokens.append(normalized)
+            if len(bounded_tokens) >= _MAX_TCP_FLAG_TOKENS:
+                break
+        bounded["tcp_flag_tokens"] = bounded_tokens
+
+    return bounded or None
+
 
 class DataMapper:
     @staticmethod
@@ -39,6 +119,33 @@ class DataMapper:
             dst_port=event.dst_port,
             protocol=event.protocol,
             action=event.action,
+            action_reason=_bounded_optional_text(
+                event.action_reason, _MAX_ACTION_REASON_CHARS
+            ),
+            tcp_flags=_bounded_optional_text(event.tcp_flags, _MAX_TCP_FLAGS_CHARS),
+            inbound_interface=_bounded_optional_text(
+                event.inbound_interface, _MAX_INTERFACE_CHARS
+            ),
+            outbound_interface=_bounded_optional_text(
+                event.outbound_interface, _MAX_INTERFACE_CHARS
+            ),
+            inbound_zone=_bounded_optional_text(event.inbound_zone, _MAX_ZONE_CHARS),
+            outbound_zone=_bounded_optional_text(event.outbound_zone, _MAX_ZONE_CHARS),
+            source_fqdns=_bounded_fqdns(event.source_fqdns),
+            destination_fqdns=_bounded_fqdns(event.destination_fqdns),
+            bytes=event.bytes,
+            packets=event.packets,
+            duration_ms=event.duration_ms,
+            nat_type=_bounded_optional_text(event.nat_type, _MAX_NAT_TYPE_CHARS),
+            translated_src_ip=_bounded_optional_text(
+                event.translated_src_ip, _MAX_IP_CHARS
+            ),
+            translated_dst_ip=_bounded_optional_text(
+                event.translated_dst_ip, _MAX_IP_CHARS
+            ),
+            translated_src_port=event.translated_src_port,
+            translated_dst_port=event.translated_dst_port,
+            parser_metadata=_bounded_parser_metadata(event.parser_metadata),
             user=event.source_username
         )
 
@@ -60,6 +167,27 @@ class DataMapper:
             dst_port=orm_event.dst_port,
             protocol=orm_event.protocol,
             action=orm_event.action,
+            action_reason=orm_event.action_reason,
+            tcp_flags=orm_event.tcp_flags,
+            inbound_interface=orm_event.inbound_interface,
+            outbound_interface=orm_event.outbound_interface,
+            inbound_zone=orm_event.inbound_zone,
+            outbound_zone=orm_event.outbound_zone,
+            source_fqdns=list(orm_event.source_fqdns or []),
+            destination_fqdns=list(orm_event.destination_fqdns or []),
+            bytes=orm_event.bytes,
+            packets=orm_event.packets,
+            duration_ms=orm_event.duration_ms,
+            nat_type=orm_event.nat_type,
+            translated_src_ip=orm_event.translated_src_ip,
+            translated_dst_ip=orm_event.translated_dst_ip,
+            translated_src_port=orm_event.translated_src_port,
+            translated_dst_port=orm_event.translated_dst_port,
+            parser_metadata=(
+                dict(orm_event.parser_metadata)
+                if isinstance(orm_event.parser_metadata, dict)
+                else None
+            ),
             source_username=orm_event.user,
             parse_status='success'
         )
