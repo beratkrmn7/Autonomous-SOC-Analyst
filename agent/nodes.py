@@ -9,8 +9,7 @@ from agent.config import get_settings
 from agent.errors import ConfigurationError
 from agent.application.cancellation import JobCancellationRequested
 from agent.triage.runner import TriageRunner
-from agent.triage.groq_provider import GroqTriageProvider
-from agent.triage.ollama_provider import OllamaTriageProvider
+from agent.triage.provider_factory import build_provider
 from agent.triage.provider import TriageProvider
 from agent.triage.cache import InMemoryTriageCache
 from agent.triage.validation import validate_evidence
@@ -37,7 +36,6 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 _triage_cache = InMemoryTriageCache()
-_circuit_breaker = None
 
 # Shared severity ranking for the exposure/policy severity-escalation cap
 # (Phase 6E.3). "none" ranks below informational so a needs_review
@@ -45,20 +43,11 @@ _circuit_breaker = None
 _SEVERITY_RANK = {"none": -1, "informational": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 
 def get_triage_runner() -> TriageRunner:
-    global _circuit_breaker
     settings = get_settings()
     if not settings.llm_enabled:
         raise ConfigurationError("LLM is disabled via settings (LLM_ENABLED=false).")
-        
-    from agent.triage.circuit_breaker import CircuitBreaker
-    if not _circuit_breaker:
-        _circuit_breaker = CircuitBreaker()
-        
-    provider: TriageProvider
-    if settings.llm_provider == "ollama":
-        provider = OllamaTriageProvider(circuit_breaker=_circuit_breaker)
-    else:
-        provider = GroqTriageProvider(circuit_breaker=_circuit_breaker)
+
+    provider: TriageProvider = build_provider(settings)
     return TriageRunner(provider=provider, cache=_triage_cache)
 
 def automated_detection_node(state: IncidentState) -> dict:

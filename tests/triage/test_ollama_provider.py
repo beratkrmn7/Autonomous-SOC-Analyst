@@ -191,18 +191,21 @@ def test_ollama_provider_rejects_non_local_base_url() -> None:
 
 
 def test_triage_runner_selects_ollama_provider(monkeypatch) -> None:
+    """Provider selection lives in one shared factory used by every caller."""
+    import agent.triage.ollama_provider as ollama_module
+    from agent.triage import provider_factory
+
     local_provider = object()
 
-    monkeypatch.setattr(nodes, "_circuit_breaker", None)
+    provider_factory.reset_shared_circuit_breaker()
     monkeypatch.setattr(nodes, "get_settings", lambda: _settings())
     monkeypatch.setattr(
-        nodes,
+        ollama_module,
         "OllamaTriageProvider",
         lambda circuit_breaker: local_provider,
     )
     monkeypatch.setattr(
-        nodes,
-        "GroqTriageProvider",
+        "agent.triage.groq_provider.GroqTriageProvider",
         lambda circuit_breaker: pytest.fail("Groq provider must not be selected"),
     )
 

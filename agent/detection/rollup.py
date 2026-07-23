@@ -30,6 +30,7 @@ MAX_ACTION_ITEMS_PER_SECTION = 5
 MAX_REPRESENTATIVE_SOURCES = 5
 MAX_SUPPRESSED_TARGETS = 5
 MAX_ASSET_PUBLIC_DESTINATIONS = 5
+MAX_ASSET_EXPOSURE_EVENT_IDS = 50
 DEFAULT_RECON_TIME_COMPATIBILITY_SECONDS = 300
 
 _SEVERITY_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1}
@@ -73,6 +74,11 @@ class ExposedAsset(BaseModel):
     nat_observed: bool
     internal_address: str | None = None
     public_destinations: tuple[str, ...] = ()
+    #: The externally allowed inbound exposure events this row was built from,
+    #: bounded. Presentation must judge the asset's evidence strength from
+    #: exactly these events - blocked scans, internal traffic and unrelated
+    #: flows to the same destination and port must never strengthen it.
+    exposure_event_ids: tuple[str, ...] = ()
 
 
 class RollupResult(BaseModel):
@@ -332,6 +338,9 @@ def _build_exposed_assets(
                     :MAX_ASSET_PUBLIC_DESTINATIONS
                 ]
             ),
+            exposure_event_ids=tuple(sorted(item["event_ids"]))[
+                :MAX_ASSET_EXPOSURE_EVENT_IDS
+            ],
         )
         for (destination, service), item in sorted(grouped.items())
     )

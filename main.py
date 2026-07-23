@@ -7,56 +7,245 @@ from rich.panel import Panel
 
 from agent.ingestion.pipeline import IngestionPipeline
 from agent.models import IncidentState
+from agent.triage.localization import normalize_language, render_digest_statement
 
 console = Console()
 
 # Duplicated logic removed. We now use AnalysisService.
 
-def _print_routing_summary(result) -> None:
+# Static full-mode scaffolding strings. Deterministic values - IDs, verdicts,
+# severities, incident types, counts and ATT&CK identifiers - are never
+# translated.
+FULL_MODE_LABELS = {
+    "en": {
+        "routing_summary": "--- TRIAGE ROUTING SUMMARY ---",
+        "batch_eligible": "Batch-enrichment eligible",
+        "deterministic_reports": "Deterministic reports",
+        "added_to_digest": "Added to digest",
+        "stored_only": "Stored only",
+        "provider_calls": "Provider calls",
+        "digest": "Digest",
+        "incidents": "incidents",
+        "sources": "sources",
+        "blocked_events": "blocked events",
+        "distinct_targets": "distinct targets",
+        "common_ports": "Common ports",
+        "sources_label": "Sources",
+        "final_state": "FINAL STATE",
+        "route": "Route",
+        "verdict": "Verdict",
+        "incident_type": "Incident Type",
+        "severity": "Severity",
+        "iterations": "Iterations",
+        "detection_confidence": "Detection confidence score",
+        "evidence_strength": "Evidence strength",
+        "why_it_matters": "Why it matters",
+        "generated_report": "GENERATED REPORT",
+        "digest_routed": "(Routed to digest; see routing summary)",
+        "store_only": "(Stored only; no report generated)",
+        "no_report": "(No report generated)",
+        "analysis_summary": "--- ANALYSIS SUMMARY ---",
+        "starting_analysis": "Starting File Analysis",
+        "parsed_events": "Parsed/valid events",
+        "detected_signals": "Detected signals",
+        "suppressed_signals": "Suppressed signals",
+        "duplicate_signals": "Duplicate signals removed",
+        "final_incidents": "Final incidents",
+        "reports": "Reports",
+    },
+    "tr": {
+        "routing_summary": "--- TRİYAJ YÖNLENDİRME ÖZETİ ---",
+        "batch_eligible": "Toplu zenginleştirmeye uygun",
+        "deterministic_reports": "Deterministik raporlar",
+        "added_to_digest": "Özete eklendi",
+        "stored_only": "Yalnızca saklandı",
+        "provider_calls": "Sağlayıcı çağrıları",
+        "digest": "Özet",
+        "incidents": "olay",
+        "sources": "kaynak",
+        "blocked_events": "engellenen olay",
+        "distinct_targets": "farklı hedef",
+        "common_ports": "Yaygın portlar",
+        "sources_label": "Kaynaklar",
+        "final_state": "NİHAİ DURUM",
+        "route": "Yönlendirme",
+        "verdict": "Karar",
+        "incident_type": "Olay Türü",
+        "severity": "Önem Derecesi",
+        "iterations": "Yineleme",
+        "detection_confidence": "Tespit güven puanı",
+        "evidence_strength": "Kanıt gücü",
+        "why_it_matters": "Neden önemli",
+        "generated_report": "OLUŞTURULAN RAPOR",
+        "digest_routed": "(Özete yönlendirildi; yönlendirme özetine bakın)",
+        "store_only": "(Yalnızca saklandı; rapor oluşturulmadı)",
+        "no_report": "(Rapor oluşturulmadı)",
+        "analysis_summary": "--- ANALİZ ÖZETİ ---",
+        "starting_analysis": "Dosya Analizi Başlatılıyor",
+        "parsed_events": "Ayrıştırılan/geçerli olaylar",
+        "detected_signals": "Tespit edilen sinyaller",
+        "suppressed_signals": "Bastırılan sinyaller",
+        "duplicate_signals": "Kaldırılan yinelenen sinyaller",
+        "final_incidents": "Nihai olaylar",
+        "reports": "Raporlar",
+    },
+}
+
+
+def _print_routing_summary(result, lang: str = "en") -> None:
     metrics = result.routing_metrics
     if not metrics:
         return
-    console.print("\n[bold cyan]--- TRIAGE ROUTING SUMMARY ---[/bold cyan]")
-    console.print(f"Individual triage: {metrics.get('individual_triage_count', 0)}")
-    console.print(f"Deterministic reports: {metrics.get('deterministic_report_count', 0)}")
-    console.print(f"Added to digest: {metrics.get('digest_incident_count', 0)}")
-    console.print(f"Stored only: {metrics.get('store_only_count', 0)}")
-    console.print(f"Provider calls: {metrics.get('provider_invocation_count', 0)}")
+    labels = FULL_MODE_LABELS.get(lang, FULL_MODE_LABELS["en"])
+    console.print(f"\n[bold cyan]{labels['routing_summary']}[/bold cyan]")
+    console.print(
+        f"{labels['batch_eligible']}: {metrics.get('individual_triage_count', 0)}"
+    )
+    console.print(
+        f"{labels['deterministic_reports']}: "
+        f"{metrics.get('deterministic_report_count', 0)}"
+    )
+    console.print(
+        f"{labels['added_to_digest']}: {metrics.get('digest_incident_count', 0)}"
+    )
+    console.print(f"{labels['stored_only']}: {metrics.get('store_only_count', 0)}")
+    console.print(
+        f"{labels['provider_calls']}: {metrics.get('provider_invocation_count', 0)}"
+    )
 
     for digest in result.triage_digests:
         console.print(
-            f"\n[bold]Digest ({digest.get('incident_type')}):[/bold] "
-            f"{digest.get('incident_count', 0)} incidents, "
-            f"{digest.get('source_count', 0)} sources, "
-            f"{digest.get('total_blocked_events', 0)} blocked events, "
-            f"{digest.get('distinct_target_count', 0)} distinct targets"
+            f"\n[bold]{labels['digest']} ({digest.get('incident_type')}):[/bold] "
+            f"{digest.get('incident_count', 0)} {labels['incidents']}, "
+            f"{digest.get('source_count', 0)} {labels['sources']}, "
+            f"{digest.get('total_blocked_events', 0)} {labels['blocked_events']}, "
+            f"{digest.get('distinct_target_count', 0)} {labels['distinct_targets']}"
         )
-        console.print(f"  Common ports: {digest.get('common_ports', [])}")
-        console.print(f"  Sources: {digest.get('sources', [])}")
-        console.print(f"  {digest.get('statement', '')}")
+        console.print(f"  {labels['common_ports']}: {digest.get('common_ports', [])}")
+        console.print(f"  {labels['sources_label']}: {digest.get('sources', [])}")
+        # Derived from the digest's own counters rather than printing the
+        # persisted English statement; the stored digest is never mutated.
+        console.print(f"  {render_digest_statement(digest, normalize_language(lang))}")
 
 
-def _print_incident_state(inc_state: IncidentState) -> None:
-    console.print(f"\n[bold cyan]--- FINAL STATE ({inc_state.get('incident_id', 'unknown')}) ---[/bold cyan]")
+def _matching_enrichment(result, incident_id: str, lang: str):
+    """The persisted enrichment text covering one incident, if any.
+
+    An incident may be represented in the brief by itself or by a group, so
+    the lookup goes through the selection's member incident IDs rather than
+    assuming a one-to-one mapping.
+    """
+    selection = getattr(result, "brief_selection", None)
+    enrichment = getattr(result, "brief_enrichment", None)
+    if selection is None or enrichment is None:
+        return None
+    for item in selection.all_items:
+        if incident_id in item.member_incident_ids:
+            entry = enrichment.for_item(item.item_id)
+            if entry is None:
+                return None
+            return (
+                entry.explanation_tr if lang == "tr" else entry.explanation_en,
+                list(
+                    entry.recommended_actions_tr
+                    if lang == "tr"
+                    else entry.recommended_actions_en
+                ),
+            )
+    return None
+
+
+def _report_body_for_display(inc_state, result, lang: str):
+    """The report body to show, rendered in the requested language.
+
+    English shows the persisted report verbatim. Turkish re-renders the same
+    deterministic facts through the localized presentation renderer, so the
+    stored English report is never displayed untranslated and is never
+    rewritten. Language stays presentation-only: no provider call, no change
+    to canonical analysis, incident identity, idempotency or any persisted
+    security decision.
+    """
+    stored = inc_state.get('final_report')
+    if lang != "tr":
+        return stored
+    if not stored or result is None:
+        return stored
+
+    from agent.triage.localization import (
+        find_incident,
+        incident_events,
+        render_deterministic_report,
+    )
+
+    detection_result = getattr(result, "detection_result", None)
+    if detection_result is None:
+        return stored
+    incident = find_incident(
+        detection_result.incidents, str(inc_state.get('incident_id', ''))
+    )
+    if incident is None:
+        return stored
+    return render_deterministic_report(
+        incident, incident_events(incident, result.event_map), "tr"
+    )
+
+
+def _print_incident_state(
+    inc_state: IncidentState, result=None, *, lang: str = "en"
+) -> None:
+    labels = FULL_MODE_LABELS.get(lang, FULL_MODE_LABELS["en"])
+    incident_id = inc_state.get('incident_id', 'unknown')
+    console.print(
+        f"\n[bold cyan]--- {labels['final_state']} ({incident_id}) ---[/bold cyan]"
+    )
     route = inc_state.get('triage_route', 'individual_triage')
-    console.print(f"[bold]Route:[/bold] {route}")
-    console.print(f"[bold]Verdict:[/bold] {inc_state.get('triage_verdict')}")
-    console.print(f"[bold]Incident Type:[/bold] {inc_state.get('incident_type')}")
-    console.print(f"[bold]Severity:[/bold] {inc_state.get('severity')}")
-    console.print(f"[bold]Iterations:[/bold] {inc_state.get('iteration_count')}")
+    # Route, verdict, type and severity are deterministic values, printed as-is.
+    console.print(f"[bold]{labels['route']}:[/bold] {route}")
+    console.print(f"[bold]{labels['verdict']}:[/bold] {inc_state.get('triage_verdict')}")
+    console.print(
+        f"[bold]{labels['incident_type']}:[/bold] {inc_state.get('incident_type')}"
+    )
+    console.print(f"[bold]{labels['severity']}:[/bold] {inc_state.get('severity')}")
+    console.print(
+        f"[bold]{labels['iterations']}:[/bold] {inc_state.get('iteration_count')}"
+    )
     detection_confidence = inc_state.get('detection_confidence')
     if detection_confidence is not None:
-        console.print(f"[bold]Detection confidence score:[/bold] {detection_confidence:.2f}")
+        console.print(
+            f"[bold]{labels['detection_confidence']}:[/bold] {detection_confidence:.2f}"
+        )
+    if inc_state.get('evidence_strength'):
+        console.print(
+            f"[bold]{labels['evidence_strength']}:[/bold] "
+            f"{inc_state['evidence_strength']}"
+        )
 
-    if inc_state.get('final_report'):
+    enriched = _matching_enrichment(
+        result, str(inc_state.get('incident_id', '')), lang
+    ) if result is not None else None
+    if enriched:
+        explanation, actions = enriched
+        if explanation:
+            console.print(f"\n[bold]{labels['why_it_matters']}:[/bold] {explanation}")
+        for action in actions:
+            console.print(f"  - {action}")
+
+    report_body = _report_body_for_display(inc_state, result, lang)
+    if report_body:
         console.print("\n")
-        console.print(Panel(Markdown(inc_state['final_report']), title="[bold green]GENERATED REPORT[/bold green]", border_style="green"))
+        console.print(
+            Panel(
+                Markdown(report_body),
+                title=f"[bold green]{labels['generated_report']}[/bold green]",
+                border_style="green",
+            )
+        )
     elif route == "digest":
-        console.print("\n[yellow](Routed to digest; see routing summary)[/yellow]")
+        console.print(f"\n[yellow]{labels['digest_routed']}[/yellow]")
     elif route == "store_only":
-        console.print("\n[yellow](Stored only; no report generated)[/yellow]")
+        console.print(f"\n[yellow]{labels['store_only']}[/yellow]")
     else:
-        console.print("\n[yellow](No report generated)[/yellow]")
+        console.print(f"\n[yellow]{labels['no_report']}[/yellow]")
 
     print("\n" + "="*50 + "\n")
 
@@ -102,8 +291,10 @@ def analyze_file(
     *,
     isolated: bool = False,
     report_mode: str = "brief",
+    lang: str = "en",
 ):
-    console.print(f"[bold blue]Starting File Analysis: {file_path}[/bold blue]")
+    banner = FULL_MODE_LABELS.get(lang, FULL_MODE_LABELS["en"])["starting_analysis"]
+    console.print(f"[bold blue]{banner}: {file_path}[/bold blue]")
 
     result = _run_persistent_analysis(
         file_path,
@@ -114,10 +305,12 @@ def analyze_file(
     )
 
     if report_mode == "full":
-        _print_analysis_summary(result)
+        # Full mode reuses the same persisted analysis as brief mode: the same
+        # job, the same deterministic facts, and the same enrichment text.
+        _print_analysis_summary(result, lang)
         for inc_state in result.incidents:
-            _print_incident_state(inc_state)
-        _print_routing_summary(result)
+            _print_incident_state(inc_state, result, lang=lang)
+        _print_routing_summary(result, lang)
         return result
 
     from pathlib import Path
@@ -149,29 +342,41 @@ def analyze_file(
         provider_call_count=int(
             (result.routing_metrics or {}).get("provider_invocation_count", 0)
         ),
+        selection=result.brief_selection,
+        enrichment=result.brief_enrichment,
+        lang="tr" if lang == "tr" else "en",
     )
     return result
 
-def _print_analysis_summary(result) -> None:
-    console.print("\n[bold cyan]--- ANALYSIS SUMMARY ---[/bold cyan]")
+def _print_analysis_summary(result, lang: str = "en") -> None:
+    labels = FULL_MODE_LABELS.get(lang, FULL_MODE_LABELS["en"])
+    console.print(f"\n[bold cyan]{labels['analysis_summary']}[/bold cyan]")
     ingestion = getattr(result, "ingestion_result", None)
     if ingestion is not None:
-        console.print(f"Parsed/valid events: {ingestion.metrics.parsed_records}")
+        console.print(
+            f"{labels['parsed_events']}: {ingestion.metrics.parsed_records}"
+        )
     det_result = result.detection_result
     if det_result is not None:
-        console.print(f"Detected signals: {det_result.metrics.signal_count}")
         console.print(
-            f"Suppressed signals: {det_result.metrics.suppressed_signal_count}"
+            f"{labels['detected_signals']}: {det_result.metrics.signal_count}"
         )
         console.print(
-            f"Duplicate signals removed: {det_result.metrics.duplicate_signal_count}"
+            f"{labels['suppressed_signals']}: "
+            f"{det_result.metrics.suppressed_signal_count}"
+        )
+        console.print(
+            f"{labels['duplicate_signals']}: "
+            f"{det_result.metrics.duplicate_signal_count}"
         )
         # With stateful correlation enabled this is the final canonical count.
-        console.print(f"Final incidents: {det_result.metrics.incident_count}")
+        console.print(
+            f"{labels['final_incidents']}: {det_result.metrics.incident_count}"
+        )
     report_count = sum(
         1 for incident_state in result.incidents if incident_state.get("final_report")
     )
-    console.print(f"Reports: {report_count}")
+    console.print(f"{labels['reports']}: {report_count}")
 
 def run_mock_test():
     run_all = os.environ.get("RUN_ALL", "false").lower() == "true"
@@ -296,6 +501,16 @@ if __name__ == "__main__":
         help="Analyze output format (default: brief)",
     )
     parser.add_argument(
+        "--lang",
+        choices=("en", "tr"),
+        default="en",
+        help=(
+            "Brief language (default: en). Presentation only: both languages "
+            "come from the same persisted enrichment, so switching never "
+            "triggers another provider call."
+        ),
+    )
+    parser.add_argument(
         "--isolated",
         action="store_true",
         help="Disable cross-job correlation for this analysis",
@@ -311,6 +526,7 @@ if __name__ == "__main__":
             args.file,
             isolated=args.isolated,
             report_mode=args.report,
+            lang=args.lang,
         )
     else:
         run_mock_test()

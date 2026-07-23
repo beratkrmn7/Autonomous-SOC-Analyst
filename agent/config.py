@@ -245,7 +245,10 @@ class Settings(BaseSettings):
     ollama_keep_alive: str = Field(default="5m", min_length=1, max_length=32)
     ollama_triage_timeout_seconds: int = Field(default=300, gt=0)
     
-    pipeline_version: str = "1.1.0"
+    # Bumped once for the deterministic exposure disposition and the persisted
+    # job-level brief enrichment: both change what an analyze job persists, so
+    # a job stored under 1.1.0 must not be replayed as if it had them.
+    pipeline_version: str = "1.2.0"
 
     llm_parser_fallback_enabled: bool = False
 

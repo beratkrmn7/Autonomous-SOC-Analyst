@@ -1,11 +1,19 @@
 """Deterministic, provider-free triage routing for detected incidents.
 
-Classifies each incident into one of four routes before any provider call,
-so only high-value incidents reach the LangGraph/LLM triage flow:
+Classifies each incident into one of four routes, so only high-value incidents
+reach the brief's action sections:
 
 - ``individual_triage``: an allowed-connection exposure or a blocked/scan/SPI
-  sequence that culminated in an allowed connection. Uses the existing
-  LangGraph/LLM flow unchanged.
+  sequence that culminated in an allowed connection.
+
+  The route name is retained because it is persisted in ``Incident.metrics``
+  and must keep round-tripping for jobs written before this change. Its
+  meaning is now **batch-enrichment eligibility**: the incident is important
+  enough to appear as its own brief row and to be described in the single
+  job-level enrichment call. It no longer means "call a provider for this
+  incident" - per-incident provider calls no longer exist, so every route
+  reports ``llm_invoked=False``. Prefer the ``BATCH_ENRICHMENT_ROUTE`` alias
+  when referring to it in new code.
 - ``deterministic_report``: fully blocked reconnaissance with no allowed
   connection. Gets a short deterministic report; no provider call.
 - ``digest``: low-severity, fully blocked scanning-family incidents (chiefly
@@ -42,10 +50,15 @@ TriageRoute = Literal[
     "individual_triage", "deterministic_report", "digest", "store_only"
 ]
 
+#: Readable alias for the persisted ``individual_triage`` value. The incident
+#: gets its own brief row and is eligible for the one job-level batch
+#: enrichment call; it is never triaged by an individual provider call.
+BATCH_ENRICHMENT_ROUTE: TriageRoute = "individual_triage"
+
 # Rule IDs whose contract requires an observed allowed connection: the
 # inbound exposure/policy pack plus the blocked/scan/SPI-then-allowed
 # sequence rules. Any incident carrying one of these signals is high value
-# and always goes through individual LLM triage.
+# and always gets its own brief row.
 HIGH_VALUE_RULE_IDS = frozenset(
     {
         "inbound_sensitive_service_allowed",
@@ -128,18 +141,18 @@ def decide_route(
     high_value_rules = signal_rule_ids & HIGH_VALUE_RULE_IDS
     if high_value_rules:
         return RoutingDecision(
-            route="individual_triage",
+            route=BATCH_ENRICHMENT_ROUTE,
             reason=f"high_value_rule:{sorted(high_value_rules)[0]}",
-            triage_origin="llm",
-            llm_invoked=True,
+            triage_origin="deterministic",
+            llm_invoked=False,
         )
 
     if any(is_allowed(event) for event in incident_events):
         return RoutingDecision(
-            route="individual_triage",
+            route=BATCH_ENRICHMENT_ROUTE,
             reason="allowed_connection_observed",
-            triage_origin="llm",
-            llm_invoked=True,
+            triage_origin="deterministic",
+            llm_invoked=False,
         )
 
     if is_likely_spi_state_desync(
@@ -158,18 +171,17 @@ def decide_route(
     # A deterministic report or digest may only claim "everything was
     # blocked" when that is literally true of every incident event. Empty
     # evidence and mixed/unrecognized-action incidents are not safe to
-    # summarize deterministically as blocked reconnaissance, so they fall
-    # back to individual LLM triage rather than a fabricated "all blocked"
-    # narrative.
+    # summarize deterministically as blocked reconnaissance, so they get their
+    # own brief row rather than a fabricated "all blocked" narrative.
     fully_blocked = bool(incident_events) and all(
         is_blocked(event) for event in incident_events
     )
     if not fully_blocked:
         return RoutingDecision(
-            route="individual_triage",
+            route=BATCH_ENRICHMENT_ROUTE,
             reason="not_fully_blocked_conservative",
-            triage_origin="llm",
-            llm_invoked=True,
+            triage_origin="deterministic",
+            llm_invoked=False,
         )
 
     if incident.incident_family == "network_scanning" and incident.severity == "low":

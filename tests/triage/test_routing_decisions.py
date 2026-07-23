@@ -154,7 +154,9 @@ def test_non_fully_blocked_incident_routes_conservatively_to_individual_triage()
     )
 
     assert decision.route == "individual_triage"
-    assert decision.llm_invoked is True
+    # The route means "batch-enrichment eligible", not "call a provider".
+    assert decision.llm_invoked is False
+    assert decision.triage_origin == "deterministic"
 
 
 def test_empty_evidence_incident_routes_to_individual_triage() -> None:
@@ -163,7 +165,8 @@ def test_empty_evidence_incident_routes_to_individual_triage() -> None:
     decision = decide_route(incident, [], [], frozenset(), DetectionSettings())
 
     assert decision.route == "individual_triage"
-    assert decision.llm_invoked is True
+    assert decision.llm_invoked is False
+    assert decision.triage_origin == "deterministic"
 
 
 def test_deterministic_report_uses_suspicious_activity_verdict() -> None:

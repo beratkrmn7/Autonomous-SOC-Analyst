@@ -537,7 +537,8 @@ def test_high_value_attached_signal_forces_individual_triage() -> None:
         DetectionSettings(),
     )
     assert decision.route == "individual_triage"
-    assert decision.llm_invoked is True
+    # Batch-enrichment eligibility; no per-incident provider call.
+    assert decision.llm_invoked is False
 
 
 def _correlated_incident_bundle_stub():

@@ -21,6 +21,8 @@ from agent.triage.exceptions import (
 )
 from agent.triage.models import TriageSubmission
 from agent.triage.provider import (
+    BriefEnrichmentProviderRequest,
+    BriefEnrichmentProviderResponse,
     TriageProvider,
     TriageProviderRequest,
     TriageProviderResponse,
@@ -201,6 +203,42 @@ class OllamaTriageProvider(TriageProvider):
                 ReviewReason.INVALID_TOOL_CALL,
             )
         return name, arguments
+
+    def invoke_brief_enrichment(
+        self, request: BriefEnrichmentProviderRequest
+    ) -> BriefEnrichmentProviderResponse:
+        """One bounded batch enrichment call, reusing the existing transport.
+
+        The same client, timeout handling, retry policy and circuit breaker as
+        single-incident triage; no second HTTP stack is introduced.
+        """
+        payload = {
+            "model": self.settings.llm_model,
+            "stream": False,
+            "keep_alive": self.settings.ollama_keep_alive,
+            "format": "json",
+            "options": {"temperature": 0},
+            "messages": [
+                {"role": "system", "content": request.system_prompt},
+                {"role": "user", "content": request.payload},
+            ],
+        }
+        body, retries = self._post_chat(payload, request.deadline)
+        message = body.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        try:
+            parsed = json.loads(content) if isinstance(content, str) else None
+        except json.JSONDecodeError as exc:
+            raise ProviderInvalidResponseError(
+                "Ollama returned non-JSON enrichment output"
+            ) from exc
+
+        return BriefEnrichmentProviderResponse(
+            raw_payload=parsed,
+            prompt_tokens=int(body.get("prompt_eval_count") or 0),
+            completion_tokens=int(body.get("eval_count") or 0),
+            retry_count=retries,
+        )
 
     def invoke(self, request: TriageProviderRequest) -> TriageProviderResponse:
         triage_input = request.context.get("triage_input")

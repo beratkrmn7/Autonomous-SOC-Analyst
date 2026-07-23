@@ -38,15 +38,23 @@ def _ingestion_result(events) -> IngestionResult:
     )
 
 
-def _patch_cli_factory(monkeypatch, session_factory, settings, campaigns):
+def _patch_cli_factory(
+    monkeypatch, session_factory, settings, campaigns, llm_enabled=None
+):
     """Point the CLI's persistent-service factory at the test database and
-    stub ingestion + detection with a queue of prebuilt campaigns."""
+    stub ingestion + detection with a queue of prebuilt campaigns.
+
+    ``llm_enabled`` is passed through explicitly so a test can exercise the
+    batch enrichment path regardless of the ambient LLM_ENABLED setting (CI
+    runs with it disabled).
+    """
     queue = list(campaigns)
 
     def fake_factory(passed_settings=None):
         events, signal, incident = queue.pop(0)
         service = AnalysisService(
-            uow=UnitOfWork(session_factory=session_factory, settings=settings)
+            uow=UnitOfWork(session_factory=session_factory, settings=settings),
+            llm_enabled=llm_enabled,
         )
         service.ingest.ingest_file = lambda path: _ingestion_result(events)  # type: ignore[assignment]
         det = make_detection_result(events=events, signals=[signal], incidents=[incident])

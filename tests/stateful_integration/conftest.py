@@ -82,43 +82,62 @@ def make_settings(*, enabled: bool = True, **overrides) -> Settings:
     return Settings(**values)
 
 
-class CountingApp:
-    """Stand-in for the LangGraph triage app. Counts provider invocations and
-    returns a valid, minimal triage state so ``_persist_triage_outputs`` can
-    write exactly one report for an individual-triage incident."""
+class CountingBatchProvider:
+    """Stand-in for the batch brief-enrichment provider.
+
+    Per-incident provider calls no longer exist; an analyze job makes at most
+    one logical batch call. ``calls`` therefore counts whole-job invocations,
+    so a job with no selected brief rows observes ``calls == 0`` and a job
+    with rows observes exactly 1.
+    """
 
     def __init__(self) -> None:
         self.calls = 0
+        self.last_item_ids: list[str] = []
 
-    def invoke(self, state: dict) -> dict:
+    def invoke_brief_enrichment(self, request):
         self.calls += 1
-        out = dict(state)
-        out["triage_verdict"] = "confirmed_incident"
-        out["final_report"] = (
-            "RDP probe from 203.0.113.10 targeting 10.0.0.5:3389. Transport "
-            "activity was blocked; no host compromise is proven."
+        self.last_item_ids = list(request.item_ids)
+        from agent.triage.provider import BriefEnrichmentProviderResponse
+
+        return BriefEnrichmentProviderResponse(
+            raw_payload={
+                "items": [
+                    {
+                        "item_id": item_id,
+                        "explanation_en": (
+                            "The exposed service is reachable from outside the "
+                            "perimeter and warrants confirmation."
+                        ),
+                        "explanation_tr": (
+                            "Açığa çıkan servise çevre dışından erişilebiliyor "
+                            "ve doğrulanması gerekir."
+                        ),
+                        "recommended_actions_en": [
+                            "Confirm whether this exposure is intended.",
+                            "Restrict the rule to networks that need it.",
+                        ],
+                        "recommended_actions_tr": [
+                            "Bu açığın amaçlanıp amaçlanmadığını doğrulayın.",
+                            "Kuralı ihtiyaç duyan ağlarla sınırlayın.",
+                        ],
+                    }
+                    for item_id in request.item_ids
+                ]
+            },
+            prompt_tokens=100,
+            completion_tokens=50,
         )
-        out["llm_invoked"] = True
-        out.setdefault("severity", "medium")
-        out.setdefault("confidence_score", 0.7)
-        out.setdefault("incident_type", state.get("incident_type", "rdp_probe"))
-        out.setdefault("iteration_count", 1)
-        out.setdefault("safe_triage_input", {"candidate_evidence": []})
-        out.setdefault("validated_evidence", [])
-        out.setdefault("rejected_evidence", [])
-        out.setdefault("entities", {})
-        out.setdefault("recommended_actions", [])
-        out.setdefault("mitre_techniques", [])
-        return out
 
 
 @pytest.fixture
-def fake_app(monkeypatch) -> CountingApp:
-    """Replace the module-level triage app with a counting stub. A test that
-    never routes to individual_triage will simply observe ``calls == 0``."""
-    app = CountingApp()
-    monkeypatch.setattr("agent.application.analysis_service.app", app)
-    return app
+def fake_app(monkeypatch) -> CountingBatchProvider:
+    """Replace the batch enrichment provider with a counting stub."""
+    provider = CountingBatchProvider()
+    monkeypatch.setattr(
+        "agent.triage.provider_factory.build_provider", lambda *a, **k: provider
+    )
+    return provider
 
 
 def make_detection_result(

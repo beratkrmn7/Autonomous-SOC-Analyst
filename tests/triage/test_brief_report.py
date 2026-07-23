@@ -3,8 +3,10 @@ from datetime import datetime, timedelta, timezone
 from rich.console import Console
 
 from agent.detection.models import DetectionEvidence, IncidentBundle
+from agent.detection.presentation import build_brief_selection
 from agent.detection.rollup import build_rollup
 from agent.triage.brief import render_soc_brief
+from agent.triage.enrichment import BriefEnrichmentResult, deterministic_fallback
 from tests.detection.helpers import FIXED_TIME, build_event
 
 
@@ -66,6 +68,12 @@ def test_brief_renders_deterministic_facts_provenance_and_evidence() -> None:
     incident = _incident(events)
     event_lookup = {event.event_id: event for event in events}
     rollup = build_rollup([incident], event_lookup)
+    selection = build_brief_selection([incident], event_lookup)
+    enrichment = BriefEnrichmentResult(
+        items=tuple(
+            deterministic_fallback(item) for item in selection.all_items
+        )
+    )
     console = Console(record=True, width=160, color_system=None)
 
     render_soc_brief(
@@ -75,17 +83,21 @@ def test_brief_renders_deterministic_facts_provenance_and_evidence() -> None:
         source_name="firewall.json",
         job_id="job-1",
         provider_call_count=0,
+        selection=selection,
+        enrichment=enrichment,
         generated_at=FIXED_TIME,
     )
     output = console.export_text()
 
     assert "SOC TRIAGE BRIEF" in output
     assert "2026-07-10 09:50:00+03:00" in output
-    assert "2 (1 this run, 1 from 1 earlier job)" in output
     assert "Evidence: brief-0" in output
     assert "Firewall pass proves policy" in output
     assert "exposure only; it does not prove authentication" in output
     assert "Provider calls for this request: 0" in output
+    # The deterministic row carries its evidence strength and ATT&CK context.
+    assert "Evidence strength: bidirectional_transport" in output
+    assert "ATT&CK context:" in output
 
 
 def test_brief_restores_persisted_utc_events_to_source_offset() -> None:

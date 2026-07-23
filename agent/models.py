@@ -147,3 +147,9 @@ class IncidentState(TypedDict, total=False):
     triage_origin: NotRequired[str]
     llm_invoked: NotRequired[bool]
     detection_confidence: NotRequired[float]
+
+    # T-B: deterministic exposure disposition. For firewall exposure/policy
+    # incidents the verdict, severity, confidence and evidence IDs are pure
+    # functions of canonical facts and are never chosen by a provider.
+    exposure_disposition: NotRequired[dict]
+    evidence_strength: NotRequired[str]

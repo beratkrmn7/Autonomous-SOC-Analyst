@@ -22,6 +22,12 @@ class AnalysisResult(BaseModel):
     triage_digests: List[Dict[str, Any]] = Field(default_factory=list)
     routing_metrics: Dict[str, Any] = Field(default_factory=dict)
 
+    # T-A: the deterministic brief rows and the one bilingual batch enrichment
+    # artifact that describes them. Both are presentation outputs; neither
+    # changes any canonical incident, verdict, severity or count.
+    brief_selection: Optional[Any] = None
+    brief_enrichment: Optional[Any] = None
+
     # Phase 6E.4: bounded scalar counters describing how incoming batch-local
     # incidents were resolved into final canonical incidents when stateful
     # cross-job correlation is enabled. Empty when the feature is disabled.

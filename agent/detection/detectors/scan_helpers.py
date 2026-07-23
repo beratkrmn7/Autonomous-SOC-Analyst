@@ -1,5 +1,7 @@
 import ipaddress
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass
+from datetime import datetime
 from types import MappingProxyType
 
 from agent.schema import CanonicalLogEvent
@@ -205,3 +207,108 @@ def classify_service(port: int | None) -> str | None:
 
 def bounded_sorted_values(values: Iterable[str], limit: int = 20) -> list[str]:
     return sorted(set(values))[:limit]
+
+
+@dataclass(frozen=True)
+class FixedSourcePortGroup:
+    """One exact source scanning from a constant, service-looking source port.
+
+    Grouping is always by exact source IP. A whole /24 is never treated as one
+    attacker here; combining several exact sources is a presentation concern
+    handled well above detection.
+    """
+
+    source_ip: str
+    source_port: int
+    events: tuple[CanonicalLogEvent, ...]
+    destination_ips: tuple[str, ...]
+    destination_ports: tuple[int, ...]
+    allowed_event_count: int
+    blocked_event_count: int
+    first_seen: datetime
+    last_seen: datetime
+
+    @property
+    def event_count(self) -> int:
+        return len(self.events)
+
+
+def find_fixed_source_port_groups(
+    events: Sequence[CanonicalLogEvent],
+    *,
+    source_ports: Sequence[int],
+    min_events: int,
+    min_distinct_destination_ports: int,
+    window_seconds: int,
+    is_external_inbound: Callable[[CanonicalLogEvent], bool],
+) -> list[FixedSourcePortGroup]:
+    """Find exact-source constant-source-port TCP SYN sweeps.
+
+    A scanner that pins its source port to 53, 80 or 443 is trying to look
+    like return traffic from a common service. The pattern is recognised only
+    from deterministic event facts: TCP initial SYN, external inbound zone, a
+    constant source port drawn from a bounded configured set, a bounded time
+    window, and deduplicated event IDs.
+
+    Reaching ``min_distinct_destination_ports`` on a single destination host
+    is accepted as the equivalent target scope of touching several hosts: the
+    behaviour is the same service enumeration either way.
+
+    ``is_external_inbound`` is injected by the caller because the zone helpers
+    live in a module that already imports this one.
+    """
+    allowed_source_ports = frozenset(source_ports)
+    grouped: dict[tuple[str, int], list[CanonicalLogEvent]] = {}
+    seen_event_ids: set[str] = set()
+
+    for event in events:
+        if event.event_id in seen_event_ids:
+            continue
+        if not event.src_ip or event.src_port is None:
+            continue
+        if event.src_port not in allowed_source_ports:
+            continue
+        if not is_tcp_initial_connection_probe(event):
+            continue
+        if not is_external_inbound(event):
+            continue
+        if event.dst_port is None or not event.dst_ip:
+            continue
+        seen_event_ids.add(event.event_id)
+        grouped.setdefault((event.src_ip, event.src_port), []).append(event)
+
+    results: list[FixedSourcePortGroup] = []
+    for (source_ip, source_port), group_events in sorted(grouped.items()):
+        ordered = sorted(
+            group_events,
+            key=lambda item: (item.timestamp or datetime.min, item.event_id),
+        )
+        timestamps = [event.timestamp for event in ordered if event.timestamp]
+        if not timestamps:
+            continue
+        if (timestamps[-1] - timestamps[0]).total_seconds() > window_seconds:
+            continue
+        if len(ordered) < min_events:
+            continue
+        destination_ports = sorted(
+            {event.dst_port for event in ordered if event.dst_port is not None}
+        )
+        if len(destination_ports) < min_distinct_destination_ports:
+            continue
+
+        results.append(
+            FixedSourcePortGroup(
+                source_ip=source_ip,
+                source_port=source_port,
+                events=tuple(ordered),
+                destination_ips=tuple(
+                    sorted({event.dst_ip for event in ordered if event.dst_ip})
+                ),
+                destination_ports=tuple(destination_ports),
+                allowed_event_count=sum(1 for event in ordered if is_allowed(event)),
+                blocked_event_count=sum(1 for event in ordered if is_blocked(event)),
+                first_seen=timestamps[0],
+                last_seen=timestamps[-1],
+            )
+        )
+    return results

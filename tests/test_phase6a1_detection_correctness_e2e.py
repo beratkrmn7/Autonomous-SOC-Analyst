@@ -15,8 +15,11 @@ def test_pf_ingestion_and_detection_correctness_without_provider_calls(monkeypat
     def provider_call_forbidden(*args: object, **kwargs: object) -> None:
         raise AssertionError("LLM/provider call attempted during deterministic detection")
 
+    # Detection must never reach a provider. Per-incident graph invocation no
+    # longer exists, so the only provider entry point left is the job-level
+    # batch enrichment, which detect mode must not reach either.
     monkeypatch.setattr(
-        "agent.application.analysis_service.app.invoke",
+        "agent.triage.provider_factory.build_provider",
         provider_call_forbidden,
     )
     service = AnalysisService()

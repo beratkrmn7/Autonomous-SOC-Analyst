@@ -416,6 +416,45 @@ class DetectionSettings(BaseModel):
         default=int(os.getenv("MAX_CONTEXT_EVENTS_PER_INCIDENT", "50")), gt=0
     )
 
+    # Fixed-source-port scanning. A scanner that pins its source port to a
+    # common service port is trying to look like return traffic. Detected as a
+    # variant of the existing vertical scan rule, so the registry count is
+    # unchanged.
+    FIXED_SOURCE_PORT_SCAN_ENABLED: bool = (
+        os.getenv("FIXED_SOURCE_PORT_SCAN_ENABLED", "true").lower() == "true"
+    )
+    FIXED_SOURCE_PORT_SCAN_PORTS: tuple[int, ...] = Field(
+        default_factory=lambda: _integer_tuple_from_env(
+            "FIXED_SOURCE_PORT_SCAN_PORTS", (53, 80, 443)
+        )
+    )
+    FIXED_SOURCE_PORT_SCAN_WINDOW_SECONDS: int = Field(
+        default=int(os.getenv("FIXED_SOURCE_PORT_SCAN_WINDOW_SECONDS", "300")), gt=0
+    )
+    #: Canonical exact-source finding threshold. Sub-threshold sources may
+    #: still contribute to a presentation cluster but never become a canonical
+    #: high-severity incident on their own.
+    FIXED_SOURCE_PORT_SCAN_MIN_EVENTS: int = Field(
+        default=int(os.getenv("FIXED_SOURCE_PORT_SCAN_MIN_EVENTS", "5")), gt=0
+    )
+    FIXED_SOURCE_PORT_SCAN_MIN_DISTINCT_PORTS: int = Field(
+        default=int(os.getenv("FIXED_SOURCE_PORT_SCAN_MIN_DISTINCT_PORTS", "3")), gt=0
+    )
+    #: Presentation-cluster thresholds (never used to create canonical rows).
+    FIXED_SOURCE_PORT_CLUSTER_MIN_SOURCES: int = Field(
+        default=int(os.getenv("FIXED_SOURCE_PORT_CLUSTER_MIN_SOURCES", "2")), gt=1
+    )
+    FIXED_SOURCE_PORT_CLUSTER_MIN_EVENTS_PER_SOURCE: int = Field(
+        default=int(os.getenv("FIXED_SOURCE_PORT_CLUSTER_MIN_EVENTS_PER_SOURCE", "3")),
+        gt=0,
+    )
+    FIXED_SOURCE_PORT_CLUSTER_MIN_TOTAL_EVENTS: int = Field(
+        default=int(os.getenv("FIXED_SOURCE_PORT_CLUSTER_MIN_TOTAL_EVENTS", "7")), gt=0
+    )
+    FIXED_SOURCE_PORT_CLUSTER_WINDOW_SECONDS: int = Field(
+        default=int(os.getenv("FIXED_SOURCE_PORT_CLUSTER_WINDOW_SECONDS", "60")), gt=0
+    )
+
     @field_validator("INTERNAL_LATERAL_SCAN_PORTS")
     @classmethod
     def validate_internal_lateral_scan_ports(

@@ -22,6 +22,7 @@ from agent.persistence.orm_models import (
     TriageRun,
 )
 from agent.persistence.unit_of_work import UnitOfWork
+from agent.triage.enrichment import REPORT_FORMAT
 
 from tests.stateful_integration.conftest import (
     campaign_job_a,
@@ -161,10 +162,20 @@ def test_whole_job_replay_creates_no_new_writes(session_factory, fake_app, monke
     assert restored["triage_route"] == "individual_triage"
     assert restored["llm_invoked"] is True
     assert restored.get("triage_origin") == "llm"
-    # No new TriageRun or Report was created by the replay.
+    # No new TriageRun or Report was created by the replay. The job holds one
+    # incident report plus the single job-level enrichment artifact, which is
+    # never attached to an incident.
     with session_factory() as session:
         assert session.query(TriageRun).count() == 1
-        assert session.query(Report).count() == 1
+        assert session.query(Report).filter(Report.incident_id.isnot(None)).count() == 1
+        artifacts = session.query(Report).filter_by(format=REPORT_FORMAT).all()
+        assert len(artifacts) == 1
+        assert artifacts[0].incident_id is None
+        assert artifacts[0].triage_run_id is None
+
+    # The stored bilingual enrichment is reloaded rather than regenerated.
+    assert replay.brief_enrichment is not None
+    assert replay.brief_enrichment.items
 
 
 def test_unexpected_resolver_failure_rolls_back_all_writes(session_factory, monkeypatch) -> None:

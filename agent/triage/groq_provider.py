@@ -1,5 +1,11 @@
 from typing import Any, List, Optional
-from agent.triage.provider import TriageProvider, TriageProviderRequest, TriageProviderResponse
+from agent.triage.provider import (
+    BriefEnrichmentProviderRequest,
+    BriefEnrichmentProviderResponse,
+    TriageProvider,
+    TriageProviderRequest,
+    TriageProviderResponse,
+)
 from agent.triage.models import TriageSubmission
 from agent.triage.exceptions import (
     TriageProviderError,
@@ -93,6 +99,70 @@ class GroqTriageProvider(TriageProvider):
         except Exception as e:
             self.circuit_breaker.record_failure()
             raise ProviderUnavailableError(str(e))
+
+    def invoke_brief_enrichment(
+        self, request: BriefEnrichmentProviderRequest
+    ) -> BriefEnrichmentProviderResponse:
+        """One bounded batch enrichment call, reusing the existing transport.
+
+        Shares the circuit breaker, retry policy and timeout handling with
+        single-incident triage; no second client or retry stack is introduced.
+        """
+        import json
+        import time
+
+        messages = [
+            SystemMessage(content=request.system_prompt),
+            HumanMessage(content=request.payload),
+        ]
+
+        timeout = None
+        if request.deadline:
+            timeout = request.deadline - time.monotonic()
+            if timeout <= 0:
+                raise ProviderTimeoutError("Deadline exceeded before provider call")
+
+        ai_message, retries = self._invoke_with_circuit_breaker(
+            messages, [], timeout=timeout
+        )
+
+        content = getattr(ai_message, "content", None)
+        if isinstance(content, list):
+            content = "".join(
+                part.get("text", "") if isinstance(part, dict) else str(part)
+                for part in content
+            )
+        parsed: object = None
+        if isinstance(content, str) and content.strip():
+            text = content.strip()
+            # Tolerate a fenced block around the JSON object; anything else is
+            # rejected as invalid rather than guessed at.
+            if text.startswith("```"):
+                text = text.strip("`")
+                newline = text.find("\n")
+                if newline != -1:
+                    text = text[newline + 1 :]
+            try:
+                parsed = json.loads(text)
+            except ValueError as exc:
+                raise ProviderInvalidResponseError(
+                    "Groq returned non-JSON enrichment output"
+                ) from exc
+
+        prompt_tokens = 0
+        completion_tokens = 0
+        metadata = getattr(ai_message, "response_metadata", None)
+        if isinstance(metadata, dict) and "token_usage" in metadata:
+            usage = metadata["token_usage"]
+            prompt_tokens = usage.get("prompt_tokens", 0)
+            completion_tokens = usage.get("completion_tokens", 0)
+
+        return BriefEnrichmentProviderResponse(
+            raw_payload=parsed,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            retry_count=retries,
+        )
 
     def invoke(self, request: TriageProviderRequest) -> TriageProviderResponse:
         messages = [

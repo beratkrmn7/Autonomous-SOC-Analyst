@@ -26,12 +26,14 @@ def test_key_format_and_determinism() -> None:
 
 
 def test_upgrade_defaults_create_new_pipeline_and_stateful_scopes() -> None:
-    assert Settings.model_fields["pipeline_version"].default == "1.1.0"
+    # Bumped once for the deterministic exposure disposition and the persisted
+    # job-level brief enrichment, both of which change what a job persists.
+    assert Settings.model_fields["pipeline_version"].default == "1.2.0"
     assert Settings.model_fields["stateful_correlation_version"].default == "2"
-    old_key = compute_idempotency_key("abc123", "1.0.0", "analyze")
-    new_key = compute_idempotency_key("abc123", "1.1.0", "analyze")
+    old_key = compute_idempotency_key("abc123", "1.1.0", "analyze")
+    new_key = compute_idempotency_key("abc123", "1.2.0", "analyze")
     assert old_key != new_key
-    assert new_key == compute_idempotency_key("abc123", "1.1.0", "analyze")
+    assert new_key == compute_idempotency_key("abc123", "1.2.0", "analyze")
 
 
 def test_detect_and_analyze_are_separate_scopes() -> None:
