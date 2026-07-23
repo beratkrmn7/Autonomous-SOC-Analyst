@@ -74,6 +74,83 @@ _FORBIDDEN_CLAIM_PATTERNS = (
     re.compile(r"(?i)\broot access\b"),
 )
 
+#: Negations that make a forbidden term a *denial* rather than an assertion.
+#: The prompt tells the model not to use these words at all, so this only
+#: keeps an otherwise-safe sentence from being thrown away. It never permits
+#: an affirmative claim: the negation must appear immediately before the term.
+_NEGATION_CUES = (
+    "no",
+    "not",
+    "never",
+    "nothing",
+    "without",
+    "cannot",
+    "can't",
+    "does",  # "does not prove", after "not" is stripped as its own token
+    "doesn't",
+    "did",
+    "didn't",
+    "is",
+    "was",
+    "were",
+    "are",
+    "isn't",
+    "wasn't",
+    "aren't",
+    "weren't",
+    "prove",
+    "proves",
+    "proven",
+    "proof",
+    "imply",
+    "implies",
+    "indicate",
+    "indicates",
+    "evidence",
+    "unproven",
+    "unconfirmed",
+)
+
+#: How many preceding words may carry the negation, e.g.
+#: "does not prove compromise" -> 3 words before "compromise".
+_NEGATION_WINDOW_WORDS = 5
+
+_WORD = re.compile(r"[a-zA-Z']+")
+
+
+def _is_negated(text: str, start: int) -> bool:
+    """True when the match at ``start`` sits inside an explicit denial.
+
+    Requires an actual negator ("no", "not", "never", "without", ...) in the
+    few preceding words. A sentence that merely mentions "evidence" nearby is
+    not enough on its own.
+    """
+    preceding = _WORD.findall(text[:start].lower())[-_NEGATION_WINDOW_WORDS:]
+    if not preceding:
+        return False
+    hard_negators = {
+        "no",
+        "not",
+        "never",
+        "nothing",
+        "without",
+        "cannot",
+        "can't",
+        "doesn't",
+        "didn't",
+        "isn't",
+        "wasn't",
+        "aren't",
+        "weren't",
+        "unproven",
+        "unconfirmed",
+    }
+    if not any(word in hard_negators for word in preceding):
+        return False
+    # The denial must be about proof/observation, not a bare "no compromise
+    # was needed" style aside.
+    return any(word in _NEGATION_CUES for word in preceding)
+
 
 class BriefEnrichmentFacts(BaseModel):
     """The bounded structured view of one row that the provider receives."""
@@ -216,8 +293,11 @@ def _rejection_reason(text: str, item: BriefActionItem) -> Optional[str]:
     if _URL.search(text):
         return "url"
     for pattern in _FORBIDDEN_CLAIM_PATTERNS:
-        if pattern.search(text):
-            return "unsupported_claim"
+        for match in pattern.finditer(text):
+            # An explicit denial ("does not prove compromise") is safe; an
+            # affirmative use of the same word is not.
+            if not _is_negated(text, match.start()):
+                return "unsupported_claim"
 
     known_addresses = _known_addresses(item)
     for address in _IPV4.findall(text):
@@ -377,13 +457,17 @@ _STRENGTH_TEXT_EN = {
         "Several packets were observed in one direction, which is more than a "
         "single probe but still does not prove the peer replied."
     ),
+    EvidenceStrength.PAYLOAD_BEARING_UNIDIRECTIONAL: (
+        "Payload-bearing transport was observed in one direction. The client "
+        "sent data; nothing observed shows the service accepted or answered it."
+    ),
     EvidenceStrength.BIDIRECTIONAL_TRANSPORT: (
-        "Traffic was observed in both directions, so a transport session was "
-        "established. This does not by itself prove authentication succeeded."
+        "Traffic was observed in both directions. This does not by itself "
+        "prove authentication succeeded or that any action was completed."
     ),
     EvidenceStrength.APPLICATION_EVIDENCE: (
-        "Application-layer traffic was observed, so the service responded to "
-        "the client. This does not by itself prove authentication succeeded."
+        "Application-layer activity was recorded for this flow. This does not "
+        "by itself prove authentication succeeded."
     ),
 }
 
@@ -400,13 +484,17 @@ _STRENGTH_TEXT_TR = {
         "Tek yönde birden fazla paket görüldü; bu tek bir denemeden fazlasıdır "
         "ancak karşı tarafın yanıt verdiğini kanıtlamaz."
     ),
+    EvidenceStrength.PAYLOAD_BEARING_UNIDIRECTIONAL: (
+        "Tek yönde veri taşıyan trafik görüldü. İstemci veri gönderdi; "
+        "servisin bunu kabul ettiğine veya yanıtladığına dair gözlem yok."
+    ),
     EvidenceStrength.BIDIRECTIONAL_TRANSPORT: (
-        "Trafik her iki yönde de görüldü, yani bir taşıma oturumu kuruldu. Bu "
-        "tek başına kimlik doğrulamanın başarılı olduğunu kanıtlamaz."
+        "Trafik her iki yönde de görüldü. Bu tek başına kimlik doğrulamanın "
+        "başarılı olduğunu veya bir işlemin tamamlandığını kanıtlamaz."
     ),
     EvidenceStrength.APPLICATION_EVIDENCE: (
-        "Uygulama katmanı trafiği görüldü, yani servis istemciye yanıt verdi. "
-        "Bu tek başına kimlik doğrulamanın başarılı olduğunu kanıtlamaz."
+        "Bu akış için uygulama katmanı etkinliği kaydedildi. Bu tek başına "
+        "kimlik doğrulamanın başarılı olduğunu kanıtlamaz."
     ),
 }
 

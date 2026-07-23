@@ -198,13 +198,17 @@ def test_bidirectional_requires_a_reply_not_a_long_duration() -> None:
     )
 
 
-def test_application_flags_yield_application_evidence() -> None:
+def test_answered_handshake_with_payload_is_bidirectional_not_application() -> None:
+    """SYN+ACK+PSH proves the peer answered, not that an application acted.
+
+    The ACK makes this bidirectional transport. The PSH only shows payload was
+    carried, so it must not be promoted to application_evidence.
+    """
     from tests.fixtures.sanitized_real_log import SSH_SWEEP_FILE0
 
-    application_event = SSH_SWEEP_FILE0[2]  # flags "SAP", 5 packets
-    assert (
-        classify_evidence_strength([application_event])
-        is EvidenceStrength.APPLICATION_EVIDENCE
+    event = SSH_SWEEP_FILE0[2]  # flags "SAP", 5 packets
+    assert classify_evidence_strength([event]) is (
+        EvidenceStrength.BIDIRECTIONAL_TRANSPORT
     )
 
 
@@ -213,3 +217,93 @@ def test_empty_canonical_events_are_a_genuine_review_condition() -> None:
     disposition = derive_exposure_disposition(incident, [])
     assert disposition.verdict == "needs_review"
     assert disposition.review_reason == "canonical_events_unavailable"
+
+
+# --- Corrected evidence-strength semantics -------------------------------
+
+
+def _psh_event(**overrides):
+    """One inbound payload-bearing packet, no observed reply."""
+    return REDIS_EXPOSURE_SINGLE_SYN.model_copy(
+        update={"event_id": "psh-1", "tcp_flags": "PA" if False else "P", **overrides}
+    )
+
+
+def test_single_inbound_psh_is_not_application_evidence() -> None:
+    """Payload leaving the client proves nothing about the service."""
+    strength = classify_evidence_strength([_psh_event()])
+    assert strength is not EvidenceStrength.APPLICATION_EVIDENCE
+    assert strength is not EvidenceStrength.BIDIRECTIONAL_TRANSPORT
+    assert strength is EvidenceStrength.PAYLOAD_BEARING_UNIDIRECTIONAL
+
+
+def test_psh_disposition_does_not_claim_the_service_responded() -> None:
+    from agent.triage.enrichment import deterministic_fallback
+    from agent.detection.presentation import item_from_incident
+
+    event = _psh_event()
+    incident = _incident([event])
+    item = item_from_incident(incident, {event.event_id: event})
+    text = deterministic_fallback(item)
+
+    for claim in ("service responded", "responded to", "session was established"):
+        assert claim not in text.explanation_en.lower()
+    assert "payload-bearing" in text.explanation_en.lower()
+
+
+def test_urg_alone_is_also_only_payload_bearing() -> None:
+    event = _psh_event(event_id="urg-1", tcp_flags="U")
+    assert (
+        classify_evidence_strength([event])
+        is EvidenceStrength.PAYLOAD_BEARING_UNIDIRECTIONAL
+    )
+
+
+def test_long_duration_never_establishes_bidirectionality() -> None:
+    for flags in ("S", "P", None):
+        event = REDIS_EXPOSURE_SINGLE_SYN.model_copy(
+            update={"event_id": f"dur-{flags}", "tcp_flags": flags, "duration_ms": 900_000}
+        )
+        assert (
+            classify_evidence_strength([event])
+            is not EvidenceStrength.BIDIRECTIONAL_TRANSPORT
+        )
+
+
+def test_answered_handshake_is_bidirectional_transport() -> None:
+    event = REDIS_EXPOSURE_SINGLE_SYN.model_copy(
+        update={"event_id": "sa-1", "tcp_flags": "SA", "packets": 4}
+    )
+    assert (
+        classify_evidence_strength([event]) is EvidenceStrength.BIDIRECTIONAL_TRANSPORT
+    )
+
+
+def test_context_matched_reverse_flow_is_bidirectional_transport() -> None:
+    """A verified reverse flow still proves the peer answered."""
+    forward = REDIS_EXPOSURE_SINGLE_SYN.model_copy(
+        update={"event_id": "fwd-1", "tcp_flags": "S"}
+    )
+    reverse = REDIS_EXPOSURE_SINGLE_SYN.model_copy(
+        update={
+            "event_id": "rev-1",
+            "src_ip": forward.dst_ip,
+            "dst_ip": forward.src_ip,
+            "src_port": forward.dst_port,
+            "dst_port": forward.src_port,
+            "tcp_flags": "A",
+        }
+    )
+    assert (
+        classify_evidence_strength([forward, reverse])
+        is EvidenceStrength.BIDIRECTIONAL_TRANSPORT
+    )
+
+
+def test_explicit_application_facts_still_yield_application_evidence() -> None:
+    event = REDIS_EXPOSURE_SINGLE_SYN.model_copy(
+        update={"event_id": "app-1", "event_category": "application"}
+    )
+    assert (
+        classify_evidence_strength([event]) is EvidenceStrength.APPLICATION_EVIDENCE
+    )

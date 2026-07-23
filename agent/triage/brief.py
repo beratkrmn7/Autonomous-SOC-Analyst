@@ -12,8 +12,6 @@ from rich.table import Table
 from rich.text import Text
 
 from agent.detection.detectors.exposure_helpers import (
-    effective_destination_ip,
-    effective_destination_port,
     is_critical_management_port,
 )
 from agent.detection.presentation import BriefActionItem, BriefSelection
@@ -87,18 +85,19 @@ def _asset_evidence_strength(
     rollup: RollupResult,
     event_lookup: Mapping[str, CanonicalLogEvent],
 ) -> dict[str, EvidenceStrength]:
-    """Deterministic evidence strength per exposed destination."""
-    by_destination: dict[str, list[CanonicalLogEvent]] = {}
-    for event in event_lookup.values():
-        destination = effective_destination_ip(event)
-        if destination:
-            by_destination.setdefault(destination, []).append(event)
+    """Evidence strength per exposed asset, from its exposure events only.
+
+    Scoped to the externally allowed inbound events the roll-up actually built
+    the row from. Blocked scans, internal traffic, context events and other
+    unrelated flows to the same destination and port must never strengthen an
+    asset or raise its priority.
+    """
     return {
         asset.effective_destination_ip: classify_evidence_strength(
             [
                 event
-                for event in by_destination.get(asset.effective_destination_ip, [])
-                if effective_destination_port(event) in set(asset.ports)
+                for event_id in asset.exposure_event_ids
+                if (event := event_lookup.get(event_id)) is not None
             ]
         )
         for asset in rollup.exposed_assets
@@ -140,8 +139,41 @@ _WEAK_STRENGTHS = frozenset(
 
 Language = Literal["en", "tr"]
 
-_LABELS = {
+# Static UI strings only. Deterministic facts - IDs, addresses, ports,
+# severity enum values, evidence-strength values and ATT&CK identifiers - are
+# never translated, so both languages cite exactly the same evidence.
+_LABELS: dict[str, dict[str, str]] = {
     "en": {
+        # Header
+        "brief_title": "SOC TRIAGE BRIEF",
+        "source": "Source",
+        "window": "Window",
+        "run": "Run",
+        "generated": "Generated",
+        "not_persisted": "not persisted",
+        "unknown_window": "unknown",
+        # Funnel
+        "funnel": "FUNNEL",
+        "funnel_events": "events",
+        "funnel_blocked": "blocked",
+        "funnel_exposures": "policy exposures",
+        "funnel_actions": "action items",
+        # Summary
+        "summary_title": "ANALYST SUMMARY",
+        "summary_sentence": (
+            "{act_now} high-priority item(s), {investigate} investigation "
+            "item(s), {recon} fully blocked reconnaissance group(s), and "
+            "{assets} exposed asset/service row(s). Firewall pass proves "
+            "policy exposure only; it does not prove authentication, "
+            "exploitation, or compromise."
+        ),
+        # Sections
+        "act_now": "§1 ACT NOW",
+        "investigate": "§2 INVESTIGATE",
+        "blocked_fyi": "§3 BLOCKED — FYI",
+        "suppressed": "§4 SUPPRESSED",
+        "inventory": "§5 EXPOSED ASSET INVENTORY",
+        # Action table
         "priority": "Priority",
         "what": "What happened / observed flow",
         "events": "Events",
@@ -152,10 +184,77 @@ _LABELS = {
         "members": "Grouped canonical incidents",
         "destinations": "destination(s)",
         "shared": "Applies to every item above",
-        "no_attack": "ATT&CK context: insufficient behavioral evidence",
         "review": "NEEDS REVIEW",
+        "unknown_source": "unknown source",
+        "unknown_destination": "unknown destination",
+        "unknown_port": "unknown port",
+        "allowed": "ALLOWED",
+        "blocked": "BLOCKED",
+        "packets_short": "pkt",
+        "none": "none",
+        # Recon table
+        "recon_source_scope": "Source scope",
+        "recon_family_scope": "Family / service scope",
+        "recon_sources": "Sources",
+        "recon_targets": "Targets",
+        "recon_ports": "Ports",
+        "recon_events": "Events",
+        "recon_empty": "No fully blocked recon groups",
+        # Suppressed table
+        "suppressed_source": "Source",
+        "suppressed_targets": "Targets",
+        "suppressed_reason": "Reason",
+        "suppressed_events": "Events",
+        "suppressed_empty": "No suppressed signals",
+        "unknown": "unknown",
+        # Inventory table
+        "asset_priority": "Priority",
+        "asset_destination": "Effective destination",
+        "asset_service": "Service / ports",
+        "asset_strength": "Evidence strength",
+        "asset_sources": "Sources",
+        "asset_nat": "NAT / public destination",
+        "asset_empty": "No exposed sensitive services",
+        "no_nat": "no NAT",
+        "public_unknown": "public address unknown",
+        "assets_truncated": (
+            "{count} additional asset/service row(s) remain available in the "
+            "full canonical result."
+        ),
+        # Footer
+        "provider_calls": "Provider calls for this request",
     },
     "tr": {
+        # Header
+        "brief_title": "SOC TRİYAJ ÖZETİ",
+        "source": "Kaynak",
+        "window": "Zaman aralığı",
+        "run": "Çalıştırma",
+        "generated": "Oluşturulma",
+        "not_persisted": "kaydedilmedi",
+        "unknown_window": "bilinmiyor",
+        # Funnel
+        "funnel": "HUNİ",
+        "funnel_events": "olay",
+        "funnel_blocked": "engellendi",
+        "funnel_exposures": "politika açığı",
+        "funnel_actions": "aksiyon maddesi",
+        # Summary
+        "summary_title": "ANALİST ÖZETİ",
+        "summary_sentence": (
+            "{act_now} yüksek öncelikli madde, {investigate} inceleme "
+            "maddesi, {recon} tamamen engellenmiş keşif grubu ve {assets} "
+            "açığa çıkan varlık/servis satırı. Güvenlik duvarının izin "
+            "vermesi yalnızca politika açığını kanıtlar; kimlik doğrulamayı, "
+            "istismarı veya ele geçirilmeyi kanıtlamaz."
+        ),
+        # Sections
+        "act_now": "§1 HEMEN AKSİYON AL",
+        "investigate": "§2 İNCELE",
+        "blocked_fyi": "§3 ENGELLENDİ — BİLGİ",
+        "suppressed": "§4 BASTIRILAN",
+        "inventory": "§5 AÇIĞA ÇIKAN VARLIK ENVANTERİ",
+        # Action table
         "priority": "Öncelik",
         "what": "Ne oldu / gözlenen akış",
         "events": "Olaylar",
@@ -165,9 +264,45 @@ _LABELS = {
         "strength": "Kanıt gücü",
         "members": "Gruplanan kanonik olaylar",
         "destinations": "hedef",
-        "shared": "Yukarıdaki tüm öğeler için geçerli",
-        "no_attack": "ATT&CK bağlamı: yeterli davranışsal kanıt yok",
+        "shared": "Yukarıdaki tüm maddeler için geçerli",
         "review": "İNCELEME GEREKLİ",
+        "unknown_source": "kaynak bilinmiyor",
+        "unknown_destination": "hedef bilinmiyor",
+        "unknown_port": "port bilinmiyor",
+        "allowed": "İZİN VERİLDİ",
+        "blocked": "ENGELLENDİ",
+        "packets_short": "paket",
+        "none": "yok",
+        # Recon table
+        "recon_source_scope": "Kaynak kapsamı",
+        "recon_family_scope": "Aile / servis kapsamı",
+        "recon_sources": "Kaynaklar",
+        "recon_targets": "Hedefler",
+        "recon_ports": "Portlar",
+        "recon_events": "Olaylar",
+        "recon_empty": "Tamamen engellenmiş keşif grubu yok",
+        # Suppressed table
+        "suppressed_source": "Kaynak",
+        "suppressed_targets": "Hedefler",
+        "suppressed_reason": "Sebep",
+        "suppressed_events": "Olaylar",
+        "suppressed_empty": "Bastırılan sinyal yok",
+        "unknown": "bilinmiyor",
+        # Inventory table
+        "asset_priority": "Öncelik",
+        "asset_destination": "Etkin hedef",
+        "asset_service": "Servis / portlar",
+        "asset_strength": "Kanıt gücü",
+        "asset_sources": "Kaynaklar",
+        "asset_nat": "NAT / genel hedef",
+        "asset_empty": "Açığa çıkan hassas servis yok",
+        "no_nat": "NAT yok",
+        "public_unknown": "genel adres bilinmiyor",
+        "assets_truncated": (
+            "{count} ek varlık/servis satırı tam kanonik sonuçta mevcuttur."
+        ),
+        # Footer
+        "provider_calls": "Bu istek için sağlayıcı çağrısı",
     },
 }
 
@@ -184,20 +319,21 @@ def _priority(severity: str) -> str:
 
 def _item_flow(item: BriefActionItem, labels: dict[str, str]) -> str:
     sources = list(item.source_ips[:2])
-    source_text = ", ".join(sources) or "unknown source"
+    source_text = ", ".join(sources) or labels["unknown_source"]
     if item.source_count > len(sources):
         source_text += f" (+{item.source_count - len(sources)})"
     destinations = list(item.effective_destinations[:2])
-    destination_text = ", ".join(destinations) or "unknown destination"
-    port_text = ",".join(str(port) for port in item.ports[:6]) or "unknown port"
+    destination_text = ", ".join(destinations) or labels["unknown_destination"]
+    port_text = ",".join(str(port) for port in item.ports[:6]) or labels["unknown_port"]
     if item.allowed_event_count and item.blocked_event_count:
         action_text = (
-            f"{item.allowed_event_count} ALLOWED / {item.blocked_event_count} BLOCKED"
+            f"{item.allowed_event_count} {labels['allowed']} / "
+            f"{item.blocked_event_count} {labels['blocked']}"
         )
     elif item.allowed_event_count:
-        action_text = "ALLOWED"
+        action_text = labels["allowed"]
     else:
-        action_text = "BLOCKED"
+        action_text = labels["blocked"]
     nat_text = " · NAT" if item.nat_observed else ""
     return (
         f"{source_text} -> {destination_text}:{port_text} · {action_text}{nat_text}\n"
@@ -263,7 +399,7 @@ def _action_table(
             severity_text = f"{severity_text}\n{labels['review']}"
         event_summary = str(item.event_count)
         if item.packet_count:
-            event_summary += f"\n{item.packet_count} pkt"
+            event_summary += f"\n{item.packet_count} {labels['packets_short']}"
 
         entry = enrichment.for_item(item.item_id) if enrichment else None
         if entry is not None:
@@ -280,10 +416,15 @@ def _action_table(
             actions = []
         actions = [action for action in actions if action not in set(shared)]
 
+        # The evidence-strength value is a deterministic enum, never translated.
         strength_text = (
-            item.evidence_strength.value if item.evidence_strength else "unknown"
+            item.evidence_strength.value
+            if item.evidence_strength
+            else labels["unknown"]
         )
-        evidence_text = ", ".join(item.evidence_ids[:MAX_BRIEF_EVIDENCE_IDS]) or "none"
+        evidence_text = (
+            ", ".join(item.evidence_ids[:MAX_BRIEF_EVIDENCE_IDS]) or labels["none"]
+        )
         why_lines = [explanation] if explanation else []
         why_lines.append(_item_attack_context(item))
         why_lines.extend(f"- {action}" for action in actions)
@@ -327,6 +468,7 @@ def render_soc_brief(
     deterministic selection and an already-persisted enrichment artifact, and
     only chooses which language to display. Rendering never triggers a call.
     """
+    labels = _LABELS[lang]
     generated_at = generated_at or datetime.now().astimezone()
     timestamps = sorted(
         event.timestamp for event in event_lookup.values() if event.timestamp is not None
@@ -342,65 +484,62 @@ def render_soc_brief(
             f"{_format_duration((last_seen - first_seen).total_seconds())}"
         )
     else:
-        window = "unknown"
+        window = labels["unknown_window"]
 
     header = (
-        "SOC TRIAGE BRIEF\n"
-        f"Source : {source_name}\n"
-        f"Window : {window}\n"
-        f"Run    : {job_id or 'not persisted'} | Generated: "
-        f"{_format_timestamp(generated_at)}"
+        f"{labels['brief_title']}\n"
+        f"{labels['source']}: {source_name}\n"
+        f"{labels['window']}: {window}\n"
+        f"{labels['run']}: {job_id or labels['not_persisted']} | "
+        f"{labels['generated']}: {_format_timestamp(generated_at)}"
     )
     console.print(Panel(header, border_style="cyan"))
 
     funnel = rollup.funnel
     console.print(
         Text(
-            "FUNNEL  "
-            f"{funnel.get('total_events', 0):,} events -> "
-            f"{funnel.get('blocked_events', 0):,} blocked -> "
-            f"{funnel.get('policy_exposures', 0):,} policy exposures -> "
-            f"{funnel.get('action_items', 0):,} action items",
+            f"{labels['funnel']}  "
+            f"{funnel.get('total_events', 0):,} {labels['funnel_events']} -> "
+            f"{funnel.get('blocked_events', 0):,} {labels['funnel_blocked']} -> "
+            f"{funnel.get('policy_exposures', 0):,} {labels['funnel_exposures']} -> "
+            f"{funnel.get('action_items', 0):,} {labels['funnel_actions']}",
             style="bold",
         )
     )
     act_now_items = selection.act_now if selection is not None else ()
     investigate_items = selection.investigate if selection is not None else ()
 
-    summary = (
-        f"{len(act_now_items)} high-priority item(s), "
-        f"{len(investigate_items)} investigation item(s), "
-        f"{len(rollup.recon_groups)} fully blocked reconnaissance group(s), and "
-        f"{len(rollup.exposed_assets)} exposed asset/service row(s). "
-        "Firewall pass proves policy exposure only; it does not prove authentication, "
-        "exploitation, or compromise."
+    summary = labels["summary_sentence"].format(
+        act_now=len(act_now_items),
+        investigate=len(investigate_items),
+        recon=len(rollup.recon_groups),
+        assets=len(rollup.exposed_assets),
     )
-    console.print(Panel(summary, title="ANALYST SUMMARY", border_style="yellow"))
+    console.print(
+        Panel(summary, title=labels["summary_title"], border_style="yellow")
+    )
 
     for title, items in (
-        ("§1 ACT NOW", act_now_items),
-        ("§2 INVESTIGATE", investigate_items),
+        (labels["act_now"], act_now_items),
+        (labels["investigate"], investigate_items),
     ):
         shared = _shared_actions(items, enrichment, lang)
         console.print(_action_table(title, items, enrichment, lang, shared))
         if shared:
             # Shown once instead of repeated on every row above.
             console.print(
-                Text(
-                    f"{_LABELS[lang]['shared']}: " + " | ".join(shared),
-                    style="dim",
-                )
+                Text(f"{labels['shared']}: " + " | ".join(shared), style="dim")
             )
 
-    recon = Table(title="§3 BLOCKED — FYI", expand=True)
-    recon.add_column("Source scope")
-    recon.add_column("Family / service scope")
-    recon.add_column("Sources", justify="right")
-    recon.add_column("Targets", justify="right")
-    recon.add_column("Ports")
-    recon.add_column("Events", justify="right")
+    recon = Table(title=labels["blocked_fyi"], expand=True)
+    recon.add_column(labels["recon_source_scope"])
+    recon.add_column(labels["recon_family_scope"])
+    recon.add_column(labels["recon_sources"], justify="right")
+    recon.add_column(labels["recon_targets"], justify="right")
+    recon.add_column(labels["recon_ports"])
+    recon.add_column(labels["recon_events"], justify="right")
     for group in rollup.recon_groups:
-        ports = ",".join(str(port) for port in group.ports[:8]) or "none"
+        ports = ",".join(str(port) for port in group.ports[:8]) or labels["none"]
         # A single contributing source is shown as its exact address; a CIDR
         # is only honest when several exact sources are actually present.
         if group.source_count == 1 and group.representative_sources:
@@ -416,43 +555,43 @@ def render_soc_brief(
             str(group.total_event_count),
         )
     if not rollup.recon_groups:
-        recon.add_row("-", "No fully blocked recon groups", "0", "0", "-", "0")
+        recon.add_row("-", labels["recon_empty"], "0", "0", "-", "0")
     console.print(recon)
 
-    suppressed = Table(title="§4 SUPPRESSED", expand=True)
-    suppressed.add_column("Source")
-    suppressed.add_column("Targets")
-    suppressed.add_column("Reason")
-    suppressed.add_column("Events", justify="right")
+    suppressed = Table(title=labels["suppressed"], expand=True)
+    suppressed.add_column(labels["suppressed_source"])
+    suppressed.add_column(labels["suppressed_targets"])
+    suppressed.add_column(labels["suppressed_reason"])
+    suppressed.add_column(labels["suppressed_events"], justify="right")
     for suppressed_entry in rollup.suppressed:
         suppressed.add_row(
             suppressed_entry.source,
-            ", ".join(suppressed_entry.targets) or "unknown",
+            ", ".join(suppressed_entry.targets) or labels["unknown"],
             suppressed_entry.reason,
             str(suppressed_entry.event_count),
         )
     if not rollup.suppressed:
-        suppressed.add_row("-", "-", "No suppressed signals", "0")
+        suppressed.add_row("-", "-", labels["suppressed_empty"], "0")
     console.print(suppressed)
 
-    assets = Table(title="§5 EXPOSED ASSET INVENTORY", expand=True)
-    assets.add_column("Priority", no_wrap=True)
-    assets.add_column("Effective destination")
-    assets.add_column("Service / ports")
-    assets.add_column("Evidence strength")
-    assets.add_column("Sources", justify="right")
-    assets.add_column("NAT / public destination")
+    assets = Table(title=labels["inventory"], expand=True)
+    assets.add_column(labels["asset_priority"], no_wrap=True)
+    assets.add_column(labels["asset_destination"])
+    assets.add_column(labels["asset_service"])
+    assets.add_column(labels["asset_strength"])
+    assets.add_column(labels["asset_sources"], justify="right")
+    assets.add_column(labels["asset_nat"])
     asset_strength = _asset_evidence_strength(rollup, event_lookup)
     ordered_assets = sorted(
         rollup.exposed_assets,
         key=lambda asset: _asset_risk_key(asset, asset_strength),
     )
     for exposed_asset in ordered_assets[:MAX_BRIEF_ASSETS]:
-        nat_text = "no NAT"
+        nat_text = labels["no_nat"]
         if exposed_asset.nat_observed:
             public = (
                 ", ".join(exposed_asset.public_destinations)
-                or "public address unknown"
+                or labels["public_unknown"]
             )
             nat_text = (
                 f"{public} -> "
@@ -471,11 +610,11 @@ def render_soc_brief(
             nat_text,
         )
     if not rollup.exposed_assets:
-        assets.add_row("-", "-", "No exposed sensitive services", "-", "0", "-")
+        assets.add_row("-", "-", labels["asset_empty"], "-", "0", "-")
     console.print(assets)
     if len(rollup.exposed_assets) > MAX_BRIEF_ASSETS:
-        console.print(
-            f"[dim]{len(rollup.exposed_assets) - MAX_BRIEF_ASSETS} additional asset/service "
-            "row(s) remain available in the full canonical result.[/dim]"
+        truncated = labels["assets_truncated"].format(
+            count=len(rollup.exposed_assets) - MAX_BRIEF_ASSETS
         )
-    console.print(f"Provider calls for this request: {provider_call_count}")
+        console.print(f"[dim]{truncated}[/dim]")
+    console.print(f"{labels['provider_calls']}: {provider_call_count}")

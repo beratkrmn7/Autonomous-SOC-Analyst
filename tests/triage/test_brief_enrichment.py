@@ -415,3 +415,103 @@ def test_artifact_round_trip_rejects_a_foreign_schema_version() -> None:
         result.schema_version, "some-other-version"
     )
     assert deserialize_result(payload) is None
+
+
+# --- Validator keeps useful enrichment (blocker 5) -----------------------
+
+
+def test_normal_safe_response_is_accepted_not_forced_to_fallback() -> None:
+    """A realistic, careful answer must survive validation intact."""
+    selection, _ = _selection([DOCKER_EXPOSURE])
+    provider = RecordingProvider(
+        payload={
+            "items": [
+                {
+                    "item_id": selection.all_items[0].item_id,
+                    "explanation_en": (
+                        "The container management API grants administrative "
+                        "control over the host that runs it, so reachability "
+                        "from outside the perimeter is significant on its own. "
+                        "The observed evidence does not prove compromise."
+                    ),
+                    "explanation_tr": (
+                        "Konteyner yönetim API'si, üzerinde çalıştığı sunucu "
+                        "üzerinde yönetimsel denetim sağlar; bu nedenle çevre "
+                        "dışından erişilebilir olması tek başına önemlidir."
+                    ),
+                    "recommended_actions_en": [
+                        "Confirm whether this management API should be published.",
+                        "Bind the daemon to a local socket and require mutual TLS.",
+                        "Review the host for unexpected container activity.",
+                    ],
+                    "recommended_actions_tr": [
+                        "Bu yönetim API'sinin yayınlanması gerekip gerekmediğini doğrulayın.",
+                        "Daemon'ı yerel sokete bağlayın ve karşılıklı TLS zorunlu kılın.",
+                        "Sunucuda beklenmeyen konteyner etkinliğini inceleyin.",
+                    ],
+                }
+            ]
+        }
+    )
+
+    result = enrich_brief_items(
+        selection.all_items, llm_enabled=True, provider_builder=lambda: provider
+    )
+
+    assert provider.calls == 1
+    assert result.enrichment_failure_reason is None
+    entry = result.items[0]
+    assert entry.deterministic_fallback is False
+    assert "container management API" in entry.explanation_en
+    assert len(entry.recommended_actions_en) == 3
+    assert len(entry.recommended_actions_tr) == 3
+
+
+def test_safe_negated_phrasing_is_not_rejected() -> None:
+    selection, _ = _selection([DOCKER_EXPOSURE])
+    items = selection.all_items
+    for text in (
+        "The firewall permitted the traffic; this does not prove compromise.",
+        "Nothing observed proves exploitation of the service.",
+        "This is not evidence of malware on the host.",
+        "No compromise was proven by these records.",
+    ):
+        payload = {
+            "items": [
+                {
+                    "item_id": items[0].item_id,
+                    "explanation_en": text,
+                    "explanation_tr": "Servise dışarıdan erişilebiliyor.",
+                    "recommended_actions_en": ["Confirm intent.", "Restrict access."],
+                    "recommended_actions_tr": ["Amacı doğrulayın.", "Erişimi kısıtlayın."],
+                }
+            ]
+        }
+        accepted, rejected = validate_enrichment_payload(payload, items)
+        assert not rejected, (text, rejected)
+        assert len(accepted) == 1
+
+
+def test_affirmative_claims_are_still_rejected_after_negation_support() -> None:
+    selection, _ = _selection([DOCKER_EXPOSURE])
+    items = selection.all_items
+    for text in (
+        "The host was compromised through this exposure.",
+        "An attacker exploited the service.",
+        "The session shows the attacker authenticated successfully.",
+        "Malware was deployed to the host.",
+        "Expect material financial loss from this incident.",
+    ):
+        payload = {
+            "items": [
+                {
+                    "item_id": items[0].item_id,
+                    "explanation_en": text,
+                    "explanation_tr": "Servise dışarıdan erişilebiliyor.",
+                    "recommended_actions_en": ["Confirm intent.", "Restrict access."],
+                    "recommended_actions_tr": ["Amacı doğrulayın.", "Erişimi kısıtlayın."],
+                }
+            ]
+        }
+        _, rejected = validate_enrichment_payload(payload, items)
+        assert rejected.get(items[0].item_id) == "unsupported_claim", text

@@ -7,7 +7,7 @@ from agent.detection.detectors.base import BaseDetectionRule, DetectionContext
 from agent.detection.evidence import select_representative_evidence
 from agent.detection.correlation import sliding_window_scan
 from agent.detection.scoring import calculate_signal_confidence
-from agent.detection.contracts import DetectionRuleMetadata
+from agent.detection.contracts import DetectionRuleMetadata, DetectionSignalVariant
 from agent.detection.detectors.exposure_helpers import (
     is_explicit_wan_zone,
     sensitive_service_for_port,
@@ -22,16 +22,33 @@ from agent.detection.detectors.scan_helpers import (
 FIXED_SOURCE_PORT_TECHNIQUE = "T1046"
 FIXED_SOURCE_PORT_TACTIC = "TA0007"
 
+#: Bound on ports rendered into the scalar metrics strings.
+MAX_METRIC_PORTS = 15
+
 class VerticalScanRule(BaseDetectionRule):
     metadata = DetectionRuleMetadata(
         rule_id="network_scan_vertical",
-        version="1.0.0",
+        # 1.1.0: the rule now emits a second declared signal identity, the
+        # fixed-source-port variant, so its emitted contract changed.
+        version="1.1.0",
         name="Vertical Port Scan",
         family="network_scanning",
         priority=100,
         supported_event_types=(),
         required_fields=("src_ip", "dst_ip"),
         signal_type="vertical_scan",
+        signal_variants=(
+            DetectionSignalVariant(
+                rule_id="network_scan_vertical",
+                rule_name="Vertical Port Scan",
+                signal_type="vertical_scan",
+            ),
+            DetectionSignalVariant(
+                rule_id="network_scan_vertical",
+                rule_name="Vertical Port Scan",
+                signal_type="fixed_source_port_scan",
+            ),
+        ),
         default_severity="medium",
         mitre_techniques=("T1046",),
         window_setting="VERTICAL_SCAN_WINDOW_SECONDS",
@@ -179,6 +196,8 @@ class VerticalScanRule(BaseDetectionRule):
             else:
                 severity = "medium"
 
+            # DetectionSignal.metrics holds scalars only, so bounded port
+            # lists are rendered as compact comma-separated strings.
             metrics: Dict[str, Any] = {
                 "variant": "fixed_source_port_scan",
                 "fixed_source_port": group.source_port,
@@ -187,8 +206,12 @@ class VerticalScanRule(BaseDetectionRule):
                 "blocked_event_count": group.blocked_event_count,
                 "distinct_destination_ports": len(group.destination_ports),
                 "distinct_destination_ips": len(group.destination_ips),
-                "destination_ports": list(group.destination_ports),
-                "sensitive_destination_ports": sensitive_ports,
+                "destination_ports": ",".join(
+                    str(port) for port in group.destination_ports[:MAX_METRIC_PORTS]
+                ),
+                "sensitive_destination_ports": ",".join(
+                    str(port) for port in sensitive_ports[:MAX_METRIC_PORTS]
+                ),
                 # ATT&CK technique and tactic are kept in separate fields; the
                 # tactic never enters a techniques collection.
                 "mitre_tactic": FIXED_SOURCE_PORT_TACTIC,

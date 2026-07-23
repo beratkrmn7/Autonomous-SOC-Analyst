@@ -26,12 +26,16 @@ Deterministic severity policy
 service class               evidence strength                severity
 =========================== ================================ ==========
 critical management         syn_only / single_packet_non_syn high
-critical management         multi_packet_unidirectional      high
+critical management         multi_packet / payload_bearing   high
 critical management         bidirectional / application      critical
 sensitive remote service    syn_only / single_packet_non_syn medium
-sensitive remote service    multi_packet / bidirectional     high
+sensitive remote service    multi_packet or stronger         high
 DNAT sensitive exposure     any                              >= high
 =========================== ================================ ==========
+
+Only ``bidirectional_transport`` and ``application_evidence`` count as proven
+transport, so payload leaving a client never escalates an exposure to
+critical on its own.
 """
 
 from __future__ import annotations
@@ -68,22 +72,49 @@ EXPOSURE_FAMILIES = frozenset({"firewall_exposure", "firewall_policy"})
 MAX_REPRESENTATIVE_EVIDENCE_IDS = 5
 MAX_DISPOSITION_ENTITIES = 10
 
-_APPLICATION_FLAGS = frozenset({"PSH", "URG"})
+#: Payload-bearing transport flags. They show the *client* sent data; on their
+#: own they never show that the destination service responded.
+_PAYLOAD_FLAGS = frozenset({"PSH", "URG"})
 _RESPONSE_FLAGS = frozenset({"ACK", "RST", "FIN"})
+
+#: Explicit canonical application-layer facts.
+_APPLICATION_CATEGORIES = frozenset(
+    {"application", "authentication", "web", "database", "dns", "email"}
+)
+_APPLICATION_PROTOCOLS = frozenset(
+    {"HTTP", "HTTPS", "DNS", "SMTP", "SSH", "RDP", "LDAP", "SMB", "FTP"}
+)
 
 
 class EvidenceStrength(str, Enum):
     """How much the observed network evidence actually supports.
 
-    Ordered weakest to strongest. The category is derived from packet counts
-    and TCP flags, never from a non-zero duration: a firewall may report a
-    multi-second duration for a single unanswered SYN, so duration alone can
-    never establish that a peer replied.
+    Ordered weakest to strongest. Categories are derived from packet counts,
+    TCP flags and verified reverse flows only.
+
+    Two things are deliberately *not* sufficient:
+
+    * Duration. A firewall may report a multi-second duration for a single
+      unanswered SYN, so duration never establishes that a peer replied.
+    * A one-directional PSH/URG packet. Payload leaving the client proves the
+      client sent data, not that the destination service accepted, processed
+      or answered it. That is ``payload_bearing_unidirectional``, which ranks
+      above plain multi-packet traffic but below anything bidirectional.
+
+    ``bidirectional_transport`` requires deterministic peer-response evidence:
+    a flow carrying both SYN and a response-oriented flag, or two canonical
+    events that context matching recognizes as the two directions of one flow.
+
+    ``application_evidence`` is reserved for an explicit canonical
+    application-layer fact - an application event category, an application
+    protocol, or an application-level outcome - and is never inferred from
+    transport flags alone.
     """
 
     SYN_ONLY = "syn_only"
     SINGLE_PACKET_NON_SYN = "single_packet_non_syn"
     MULTI_PACKET_UNIDIRECTIONAL = "multi_packet_unidirectional"
+    PAYLOAD_BEARING_UNIDIRECTIONAL = "payload_bearing_unidirectional"
     BIDIRECTIONAL_TRANSPORT = "bidirectional_transport"
     APPLICATION_EVIDENCE = "application_evidence"
 
@@ -92,8 +123,9 @@ EVIDENCE_STRENGTH_RANK = {
     EvidenceStrength.SYN_ONLY: 0,
     EvidenceStrength.SINGLE_PACKET_NON_SYN: 1,
     EvidenceStrength.MULTI_PACKET_UNIDIRECTIONAL: 2,
-    EvidenceStrength.BIDIRECTIONAL_TRANSPORT: 3,
-    EvidenceStrength.APPLICATION_EVIDENCE: 4,
+    EvidenceStrength.PAYLOAD_BEARING_UNIDIRECTIONAL: 3,
+    EvidenceStrength.BIDIRECTIONAL_TRANSPORT: 4,
+    EvidenceStrength.APPLICATION_EVIDENCE: 5,
 }
 
 _WEAK_STRENGTHS = frozenset(
@@ -151,22 +183,43 @@ def _unique_events(
 
 
 def _has_application_evidence(events: Sequence[CanonicalLogEvent]) -> bool:
-    return any(bool(event_tcp_flag_tokens(event) & _APPLICATION_FLAGS) for event in events)
+    """True only for an explicit canonical application-layer fact.
+
+    Transport flags are never enough: a PSH from the client says the client
+    sent bytes, not that an application on the far side did anything.
+    """
+    for event in events:
+        if str(event.event_category or "").strip().lower() in _APPLICATION_CATEGORIES:
+            return True
+        if str(event.protocol or "").strip().upper() in _APPLICATION_PROTOCOLS:
+            return True
+        metadata = event.parser_metadata or {}
+        if metadata.get("application_protocol") or metadata.get("application_evidence"):
+            return True
+    return False
+
+
+def _has_payload_evidence(events: Sequence[CanonicalLogEvent]) -> bool:
+    """True when payload-bearing transport was observed in one direction."""
+    return any(
+        bool(event_tcp_flag_tokens(event) & _PAYLOAD_FLAGS) for event in events
+    )
 
 
 def _has_bidirectional_evidence(events: Sequence[CanonicalLogEvent]) -> bool:
     """True only when a peer demonstrably answered.
 
-    Two independent deterministic signals qualify: a single flow that carries
-    both SYN and a response-oriented flag (a completed or answered handshake),
-    or two canonical events that context matching recognizes as the two
-    directions of one flow.
+    Exactly two deterministic signals qualify: one flow carrying both SYN and
+    a response-oriented flag (an answered handshake), or two canonical events
+    that context matching recognizes as the two directions of one flow.
+
+    A response-oriented flag *without* SYN is not enough on its own - an
+    unsolicited RST or FIN observed inbound proves no established session -
+    so it only counts through verified context matching below.
     """
     for event in events:
         tokens = event_tcp_flag_tokens(event)
         if "SYN" in tokens and tokens & _RESPONSE_FLAGS:
-            return True
-        if not tokens & {"SYN"} and tokens & _RESPONSE_FLAGS and _packets(event) > 1:
             return True
 
     for index, event in enumerate(events):
@@ -194,6 +247,9 @@ def classify_evidence_strength(
         return EvidenceStrength.APPLICATION_EVIDENCE
     if _has_bidirectional_evidence(unique):
         return EvidenceStrength.BIDIRECTIONAL_TRANSPORT
+    if _has_payload_evidence(unique):
+        # Payload left the client. Nothing here shows it was accepted.
+        return EvidenceStrength.PAYLOAD_BEARING_UNIDIRECTIONAL
 
     total_packets = sum(_packets(event) for event in unique)
     # A firewall that omits packet counts still reports one record per flow;
@@ -222,6 +278,8 @@ def _transport_direction(
 ) -> str:
     if strength in _TRANSPORT_PROVEN_STRENGTHS:
         return "bidirectional_observed"
+    if strength is EvidenceStrength.PAYLOAD_BEARING_UNIDIRECTIONAL:
+        return "inbound_only_payload_bearing"
     if any(_packets(event) > 1 for event in events):
         return "outbound_only_multi_packet"
     return "outbound_only_single_packet"
