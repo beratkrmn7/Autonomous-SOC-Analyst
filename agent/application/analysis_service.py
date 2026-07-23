@@ -35,6 +35,11 @@ from agent.triage.routing import (
     decide_route,
     generate_deterministic_report,
 )
+from agent.triage.disposition import (
+    ExposureDisposition,
+    derive_exposure_disposition,
+    is_exposure_incident,
+)
 from agent.application.cancellation import (
     JobCancellationChecker,
     JobCancellationRequested,
@@ -174,6 +179,52 @@ def _route_incident(
         inc, incident_events, incident_context_events, rule_ids, settings
     )
     return decision, incident_events
+
+
+def _apply_exposure_disposition(
+    inc: IncidentBundle,
+    incident_events: Sequence[CanonicalLogEvent],
+    state: IncidentState,
+) -> Optional[ExposureDisposition]:
+    """Deterministically dispose one firewall exposure/policy incident.
+
+    Verdict, severity, confidence and evidence IDs for these families are pure
+    functions of canonical facts. They are set here and must never be
+    overwritten by a provider response, so a model that is slow, unreachable or
+    inconsistent cannot change the security outcome of an exposure.
+    """
+    if not is_exposure_incident(inc):
+        return None
+    disposition = derive_exposure_disposition(inc, incident_events)
+    state["triage_verdict"] = disposition.verdict
+    state["severity"] = disposition.severity
+    state["confidence_score"] = disposition.detection_confidence
+    state["incident_type"] = inc.incident_type
+    state["evidence_strength"] = disposition.evidence_strength.value
+    state["exposure_disposition"] = disposition.model_dump(mode="json")
+    if disposition.review_reason:
+        state["review_reason"] = disposition.review_reason
+    return disposition
+
+
+def _stash_disposition_in_incident_metrics(
+    inc: IncidentBundle, disposition: ExposureDisposition
+) -> None:
+    """Persist the disposition so replay restores it losslessly.
+
+    Uses the existing Incident.metrics JSON column; no migration is required.
+    """
+    inc.metrics = {
+        **inc.metrics,
+        "exposure_verdict": disposition.verdict,
+        "exposure_severity": disposition.severity,
+        "evidence_strength": disposition.evidence_strength.value,
+        "exposure_service_sensitivity": disposition.service_sensitivity,
+        "exposure_allowed_event_count": disposition.allowed_event_count,
+        "exposure_blocked_event_count": disposition.blocked_event_count,
+        "exposure_packet_count": disposition.packet_count,
+        "exposure_byte_count": disposition.byte_count,
+    }
 
 
 def _new_routing_metrics() -> Dict[str, int]:
@@ -698,6 +749,23 @@ class AnalysisService:
             "llm_invoked": decision.llm_invoked,
         }
 
+    @staticmethod
+    def _stash_disposition_on_row(
+        incident_row: Incident, disposition: ExposureDisposition
+    ) -> None:
+        """Mirror the deterministic exposure disposition onto the ORM row."""
+        incident_row.metrics = {  # type: ignore[assignment]
+            **(dict(incident_row.metrics or {})),
+            "exposure_verdict": disposition.verdict,
+            "exposure_severity": disposition.severity,
+            "evidence_strength": disposition.evidence_strength.value,
+            "exposure_service_sensitivity": disposition.service_sensitivity,
+            "exposure_allowed_event_count": disposition.allowed_event_count,
+            "exposure_blocked_event_count": disposition.blocked_event_count,
+            "exposure_packet_count": disposition.packet_count,
+            "exposure_byte_count": disposition.byte_count,
+        }
+
     def _process_events_stateful(
         self,
         result: AnalysisResult,
@@ -954,6 +1022,14 @@ class AnalysisService:
         )
         self._stash_routing_on_row(row, decision)
         _annotate_routing(initial_state, decision, bundle.confidence)
+        # Exposure families are disposed deterministically before any provider
+        # is considered, so the outcome does not depend on model availability.
+        disposition = _apply_exposure_disposition(
+            bundle, incident_events, initial_state
+        )
+        if disposition is not None:
+            _stash_disposition_in_incident_metrics(bundle, disposition)
+            self._stash_disposition_on_row(row, disposition)
         # Only fresh (status "new") incidents get an initial lifecycle
         # transition; an already-triaged or analyst-managed canonical
         # incident keeps its status on a re-triage.
@@ -963,11 +1039,15 @@ class AnalysisService:
             routing_metrics["individual_triage_count"] += 1
             if not self.llm_enabled:
                 initial_state["llm_invoked"] = False
-                initial_state["triage_verdict"] = "needs_review"
-                initial_state["review_reason"] = "provider_unavailable"
                 initial_state["incident_type"] = bundle.incident_type
-                initial_state["severity"] = "none"
-                initial_state["confidence_score"] = 0.0
+                if disposition is None:
+                    # Only incidents without a deterministic disposition are
+                    # genuinely unreviewed when no provider is available. An
+                    # exposure keeps its deterministic verdict and severity.
+                    initial_state["triage_verdict"] = "needs_review"
+                    initial_state["review_reason"] = "provider_unavailable"
+                    initial_state["severity"] = "none"
+                    initial_state["confidence_score"] = 0.0
                 self._persist_triage_outputs(
                     uow,
                     job,
@@ -982,6 +1062,9 @@ class AnalysisService:
                 final_state = cast(IncidentState, app.invoke(initial_state))
                 self._raise_if_cancelled(job_id)
                 _annotate_routing(final_state, decision, bundle.confidence)
+                # The deterministic exposure disposition always wins over any
+                # provider-chosen verdict, severity or evidence selection.
+                _apply_exposure_disposition(bundle, incident_events, final_state)
                 self._persist_triage_outputs(
                     uow, job, final_state, row,
                     allow_lifecycle_transition=allow_transition,
@@ -1150,6 +1233,17 @@ class AnalysisService:
                             state["incident_type"] = domain_inc.incident_type
                             state["severity"] = domain_inc.severity
                             state["confidence_score"] = domain_inc.confidence
+                            # Restore the deterministic exposure disposition
+                            # recorded when the job originally ran, so replay
+                            # never re-derives it from lossy hydrated events.
+                            stored_strength = domain_inc.metrics.get("evidence_strength")
+                            if stored_strength:
+                                state["evidence_strength"] = str(stored_strength)
+                                state["severity"] = str(
+                                    domain_inc.metrics.get(
+                                        "exposure_severity", domain_inc.severity
+                                    )
+                                )
 
                             routing_metrics["total_incidents"] += 1
                             if decision.route == "individual_triage":
@@ -1354,16 +1448,25 @@ class AnalysisService:
             _stash_routing_in_incident_metrics(inc, decision)
 
             _annotate_routing(initial_state, decision, inc.confidence)
+            disposition = _apply_exposure_disposition(
+                inc, incident_events, initial_state
+            )
+            if disposition is not None:
+                _stash_disposition_in_incident_metrics(inc, disposition)
 
             if decision.route == "individual_triage":
                 routing_metrics["individual_triage_count"] += 1
                 if not self.llm_enabled:
                     initial_state["llm_invoked"] = False
-                    initial_state["triage_verdict"] = "needs_review"
-                    initial_state["review_reason"] = "provider_unavailable"
                     initial_state["incident_type"] = inc.incident_type
-                    initial_state["severity"] = "none"
-                    initial_state["confidence_score"] = 0.0
+                    if disposition is None:
+                        # Non-exposure incidents have no deterministic
+                        # disposition, so an unavailable provider genuinely
+                        # leaves them unreviewed.
+                        initial_state["triage_verdict"] = "needs_review"
+                        initial_state["review_reason"] = "provider_unavailable"
+                        initial_state["severity"] = "none"
+                        initial_state["confidence_score"] = 0.0
                     result.incidents.append(initial_state)
                     continue
                 routing_metrics["provider_invocation_count"] += 1
@@ -1372,6 +1475,7 @@ class AnalysisService:
                     final_state = cast(IncidentState, app.invoke(initial_state))
                     self._raise_if_cancelled(job_id)
                     _annotate_routing(final_state, decision, inc.confidence)
+                    _apply_exposure_disposition(inc, incident_events, final_state)
                     result.incidents.append(final_state)
                 except JobCancellationRequested:
                     raise
