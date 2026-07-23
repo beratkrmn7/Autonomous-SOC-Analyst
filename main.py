@@ -7,6 +7,7 @@ from rich.panel import Panel
 
 from agent.ingestion.pipeline import IngestionPipeline
 from agent.models import IncidentState
+from agent.triage.localization import normalize_language, render_digest_statement
 
 console = Console()
 
@@ -122,7 +123,9 @@ def _print_routing_summary(result, lang: str = "en") -> None:
         )
         console.print(f"  {labels['common_ports']}: {digest.get('common_ports', [])}")
         console.print(f"  {labels['sources_label']}: {digest.get('sources', [])}")
-        console.print(f"  {digest.get('statement', '')}")
+        # Derived from the digest's own counters rather than printing the
+        # persisted English statement; the stored digest is never mutated.
+        console.print(f"  {render_digest_statement(digest, normalize_language(lang))}")
 
 
 def _matching_enrichment(result, incident_id: str, lang: str):

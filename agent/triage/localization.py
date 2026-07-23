@@ -295,6 +295,31 @@ _REPORT_LABELS = {
 }
 
 
+_DIGEST_STATEMENTS = {
+    "en": (
+        "No allowed connection was observed for any incident in this digest; "
+        "all {blocked} event(s) were blocked reconnaissance."
+    ),
+    "tr": (
+        "Bu özetteki hiçbir olayda izin verilen bağlantı gözlenmedi; "
+        "{blocked} olayın tamamı engellenen keşif etkinliğidir."
+    ),
+}
+
+
+def render_digest_statement(digest: Mapping[str, object], lang: Language) -> str:
+    """A localized digest statement derived from the digest's own counters.
+
+    The persisted digest is never mutated: its stored English ``statement`` is
+    left untouched and this text is derived from ``total_blocked_events`` for
+    display only. No provider is involved.
+    """
+    blocked = digest.get("total_blocked_events", 0)
+    blocked_count = blocked if isinstance(blocked, int) else 0
+    template = _DIGEST_STATEMENTS.get(lang, _DIGEST_STATEMENTS["en"])
+    return template.format(blocked=blocked_count)
+
+
 def render_deterministic_report(
     incident: IncidentBundle,
     incident_events: Sequence[CanonicalLogEvent],
@@ -331,7 +356,7 @@ def render_deterministic_report(
 
     from agent.triage.provenance import format_event_provenance
 
-    provenance = format_event_provenance(event_count, incident.metrics)
+    provenance = format_event_provenance(event_count, incident.metrics, lang)
     type_label = incident_type_label(incident.incident_type, lang)
     lines = [
         f"# {labels['title']}: {type_label}",

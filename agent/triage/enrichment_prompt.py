@@ -63,6 +63,23 @@ need to negate a claim. Never assert data exfiltration, credential theft, or
 a specific business, financial or regulatory impact. Do not invent ATT&CK
 technique IDs.
 
+The same prohibition applies to the Turkish text, and to any mixed-language
+sentence. Never use any of these, in either field, not even to deny them:
+  - "ele geçirildi" / "ele geçirilme"
+  - "güvenlik ihlali" / "ihlal edildi"
+  - "istismar" / "sömürüldü"
+  - "zararlı yazılım" / "fidye yazılımı" / "arka kapı"
+  - "kimlik doğrulandı" / "kimlik doğrulama başarılı"
+  - "oturum açıldı" / "giriş başarılı"
+  - "veri sızdırıldı" / "veri çalındı"
+  - "kimlik bilgileri çalındı" / "parolalar çalındı"
+  - "mali kayıp" / "finansal kayıp" / "iş etkisi"
+  - "kabuk erişimi" / "kök erişimi"
+
+Describe what was observed instead. For example, write "güvenlik duvarı
+bağlantı denemesine izin verdi" or "kayıtlar yalnızca ağ erişilebilirliğini
+gösterir" rather than negating a claim you should not raise.
+
 Return ONLY a JSON object of this exact shape, with no prose around it:
 
 {{"items": [

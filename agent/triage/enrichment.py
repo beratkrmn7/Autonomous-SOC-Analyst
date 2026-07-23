@@ -53,8 +53,8 @@ _HOSTNAME = re.compile(
 _PORT_MENTION = re.compile(r"(?i)\b(?:port|tcp|udp)[\s:/]*([0-9]{1,5})\b")
 _BARE_NUMBER = re.compile(r"\b\d{2,}\b")
 
-#: Claims a firewall log can never support.
-_FORBIDDEN_CLAIM_PATTERNS = (
+#: Claims a firewall log can never support, in English.
+_FORBIDDEN_CLAIM_PATTERNS_EN = (
     re.compile(
         r"(?i)\b(compromis(?:e|ed|ing)|breached?|owned|pwned|takeover|taken over)\b"
     ),
@@ -72,6 +72,58 @@ _FORBIDDEN_CLAIM_PATTERNS = (
     ),
     re.compile(r"(?i)\bshell (?:access|obtained)\b"),
     re.compile(r"(?i)\broot access\b"),
+)
+
+#: The same prohibitions in Turkish. Turkish is agglutinative, so each stem is
+#: matched with an open suffix tail rather than a fixed word list - "ele
+#: geçirildi", "ele geçirilmiş", "ele geçirilmedi" and "ele geçirilmesi" all
+#: match one pattern. Matching the stem also means a negated form is caught,
+#: which is intended: there is no negation exception in either language.
+_FORBIDDEN_CLAIM_PATTERNS_TR = (
+    # compromise / takeover
+    re.compile(r"(?i)\bele\s+geçir\w*"),
+    re.compile(r"\b(?i:ele\s+geçirilme\w*)"),
+    # breach
+    re.compile(r"(?i)\bgüvenlik\s+ihlal\w*"),
+    re.compile(r"(?i)\bihlal\s+edil\w*"),
+    # exploitation
+    re.compile(r"(?i)\bistismar\w*"),
+    re.compile(r"(?i)\bsömür\w*"),
+    re.compile(r"(?i)\bzafiyet\s+kullan\w*"),
+    # malware
+    re.compile(r"(?i)\bzararlı\s+yazılım\w*"),
+    re.compile(r"(?i)\bkötü\s+amaçlı\s+yazılım\w*"),
+    re.compile(r"(?i)\bfidye\s+yazılım\w*"),
+    re.compile(r"(?i)\barka\s+kapı\w*"),
+    re.compile(r"(?i)\btruva\s+atı\w*"),
+    # authentication success
+    re.compile(r"(?i)\bkimlik\s+doğrulan\w*"),
+    re.compile(r"(?i)\bkimlik\s+doğrulama\s+başar\w*"),
+    re.compile(r"(?i)\boturum\s+açıl\w*"),
+    re.compile(r"(?i)\bgiriş\s+başar\w*"),
+    re.compile(r"(?i)\bbaşarıyla\s+giriş\w*"),
+    # data exfiltration / credential theft
+    re.compile(r"(?i)\bveri(?:ler)?\s+(?:sızdır\w*|çalın\w*|dışarı\s+aktar\w*)"),
+    re.compile(r"(?i)\bdışarı\s+sızdır\w*"),
+    re.compile(r"(?i)\bveri\s+sızıntı\w*"),
+    re.compile(r"(?i)\b(?:kimlik\s+bilgi\w*|parola\w*|şifre\w*)\s+çalın\w*"),
+    # business impact
+    re.compile(r"(?i)\b(?:mali|finansal)\s+kayıp\w*"),
+    re.compile(r"(?i)\biş\s+etkisi\w*"),
+    re.compile(r"(?i)\bitibar\s+kayb\w*"),
+    re.compile(r"(?i)\bdüzenleyici\s+ceza\w*"),
+    # privileged access
+    re.compile(r"(?i)\bkabuk\s+erişim\w*"),
+    re.compile(r"(?i)\bkök\s+erişim\w*"),
+    re.compile(r"(?i)\byönetici\s+erişimi\s+elde\s+edil\w*"),
+)
+
+#: Every generated text field is checked against both sets regardless of which
+#: language it is supposed to be in, so a Turkish claim in an English field -
+#: or a mixed-language sentence - is caught either way.
+_FORBIDDEN_CLAIM_PATTERNS = (
+    *_FORBIDDEN_CLAIM_PATTERNS_EN,
+    *_FORBIDDEN_CLAIM_PATTERNS_TR,
 )
 
 
