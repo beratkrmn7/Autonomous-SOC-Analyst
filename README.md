@@ -1,4 +1,4 @@
-# Agentic SOC Triage Assistant
+# Deterministic SOC Triage
 
 [![CI Pipeline](https://github.com/beratkrmn7/Agentic-SOC-Triage-Assistant/actions/workflows/ci.yml/badge.svg)](https://github.com/beratkrmn7/Agentic-SOC-Triage-Assistant/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB.svg)](https://www.python.org/downloads/)
