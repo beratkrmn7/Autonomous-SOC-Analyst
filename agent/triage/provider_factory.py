@@ -41,6 +41,12 @@ def build_provider(settings: Optional[object] = None) -> TriageProvider:
         from agent.triage.ollama_provider import OllamaTriageProvider
 
         provider = OllamaTriageProvider(circuit_breaker=breaker)
+    elif active_settings.llm_provider == "openai_compatible":  # type: ignore[attr-defined]
+        from agent.triage.openai_compatible_provider import (
+            OpenAICompatibleTriageProvider,
+        )
+
+        provider = OpenAICompatibleTriageProvider(circuit_breaker=breaker)
     else:
         from agent.triage.groq_provider import GroqTriageProvider
 

@@ -110,6 +110,49 @@ def _normalize_opensearch_host(value: str) -> str:
     return f"{parsed.scheme.lower()}://{host}:{effective_port}"
 
 
+_OPENAI_COMPATIBLE_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+def _normalize_openai_compatible_base_url(
+    value: str, *, allow_insecure_http: bool
+) -> str:
+    """Validate and normalize the OpenAI-compatible base URL.
+
+    Strips a trailing slash, accepts only http/https origins, and rejects
+    embedded credentials, query strings and fragments. A non-loopback http
+    origin requires an explicit insecure-http opt-in. The raw value never
+    contains the API key, so it is safe to reference the field name (but not
+    the value) in the raised error.
+    """
+    normalized = value.strip().rstrip("/")
+    parsed = urlsplit(normalized)
+    scheme = parsed.scheme.lower()
+    if (
+        scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("openai_compatible_base_url_invalid")
+    try:
+        parsed.port
+    except ValueError:
+        raise ValueError("openai_compatible_base_url_invalid") from None
+    if scheme == "http":
+        host = parsed.hostname.lower()
+        is_loopback = host in _OPENAI_COMPATIBLE_LOOPBACK_HOSTS
+        if not is_loopback:
+            try:
+                is_loopback = ip_address(parsed.hostname).is_loopback
+            except ValueError:
+                is_loopback = False
+        if not is_loopback and not allow_insecure_http:
+            raise ValueError("openai_compatible_insecure_http_not_allowed")
+    return normalized
+
+
 class Settings(BaseSettings):
     app_env: Literal["development", "test", "production"] = "development"
     log_level: str = "INFO"
@@ -238,12 +281,22 @@ class Settings(BaseSettings):
     opensearch_outbox_max_claim_batch_size: int = Field(default=1_000, ge=1, le=5_000)
 
     llm_enabled: bool = True
-    llm_provider: Literal["groq", "ollama"] = "groq"
+    llm_provider: Literal["groq", "ollama", "openai_compatible"] = "groq"
     llm_model: str = "openai/gpt-oss-120b"
     groq_api_key: Optional[SecretStr] = None
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_keep_alive: str = Field(default="5m", min_length=1, max_length=32)
     ollama_triage_timeout_seconds: int = Field(default=300, gt=0)
+
+    # Optional third provider: a remote OpenAI-compatible llama.cpp server.
+    # Inert unless LLM_PROVIDER=openai_compatible; defaults leave the existing
+    # Groq and Ollama behaviour untouched. The API key is a SecretStr so it is
+    # redacted from repr, logs and validation errors.
+    openai_compatible_base_url: str = ""
+    openai_compatible_api_key: Optional[SecretStr] = None
+    openai_compatible_enable_thinking: bool = False
+    openai_compatible_context_window_tokens: int = Field(default=8192, gt=0)
+    openai_compatible_allow_insecure_http: bool = False
     
     # Bumped once for the deterministic exposure disposition and the persisted
     # job-level brief enrichment: both change what an analyze job persists, so
@@ -431,6 +484,35 @@ class Settings(BaseSettings):
             > self.opensearch_outbox_max_claim_batch_size
         ):
             raise ValueError("opensearch_outbox_claim_batch_size_exceeds_maximum")
+
+        # Optional OpenAI-compatible provider. The base URL is validated
+        # whenever it is set so a malformed origin is always rejected; the
+        # remaining requirements only bind when this provider is selected so
+        # the Groq and Ollama defaults stay untouched.
+        base_url = self.openai_compatible_base_url.strip()
+        if base_url:
+            base_url = _normalize_openai_compatible_base_url(
+                base_url,
+                allow_insecure_http=self.openai_compatible_allow_insecure_http,
+            )
+        self.openai_compatible_base_url = base_url
+        if self.llm_provider == "openai_compatible":
+            if not base_url:
+                raise ValueError("openai_compatible_base_url_required")
+            api_key = (
+                self.openai_compatible_api_key.get_secret_value()
+                if self.openai_compatible_api_key is not None
+                else ""
+            )
+            if not api_key.strip():
+                raise ValueError("openai_compatible_api_key_required")
+            if not self.llm_model.strip():
+                raise ValueError("openai_compatible_model_required")
+            if (
+                self.max_prompt_tokens + self.max_completion_tokens
+                > self.openai_compatible_context_window_tokens
+            ):
+                raise ValueError("openai_compatible_context_budget_exceeded")
 
         if self.app_env == "production":
             if self.auth_mode == "disabled":
