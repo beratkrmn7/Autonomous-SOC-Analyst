@@ -21,3 +21,7 @@ var/retention-archives/
 *.db
 *.sqlite
 *.sqlite3
+
+# Local development dumps
+mypy_errors.txt
+mypy_*.txt
